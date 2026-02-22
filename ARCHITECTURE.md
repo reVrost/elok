@@ -159,9 +159,10 @@ Optional capabilities:
 
 `plugins/plan-mode` demonstrates:
 
-- Session-scoped toggle state (`/plan on|off|status`).
-- `hook.before_turn` that rewrites user text with planning instructions when enabled.
-- `hook.after_turn` no-op ack.
+- Session-scoped plan/execution state handled by a script runtime (`/plan on|off|status|execute`, `/todos`).
+- `hook.before_turn` context injection for plan mode and execution mode.
+- `hook.after_turn` that extracts numbered plan steps and tracks `[DONE:n]` completion markers.
+- Script hot-reload on file changes (`plugins/plan-mode/cmd/planmode/runtime/plan_mode.js`).
 
 This plugin is effectively prompt shaping + command UX, not a planner/executor engine.
 
@@ -267,6 +268,8 @@ Config struct (`pkg/config/config.go`) includes:
 
 - `db_path`
 - `listen_addr`
+- `logging` (`format`, `level`)
+- `observability` (`victoria_logs_url`, batching/queue/timeout controls)
 - `llm` (`provider`, `model`, `api_key_env`, `base_url`, `codex_auth_path`)
 - `plugins` (`enabled`, plugin entries with command argv)
 - `gateway` (`enable_ws`)
@@ -288,7 +291,7 @@ Note: `gateway.enable_ws` is present in config but gateway startup does not curr
 - HTTP server handles connections concurrently.
 - Each WS connection loop processes requests sequentially as read/write operations.
 - Plugin manager supports concurrent in-flight RPCs per plugin via pending map and request IDs.
-- `plan-mode` plugin maintains in-memory session toggles guarded by RW mutex.
+- `plan-mode` plugin maintains in-memory session JSON state guarded by RW mutex and serializes QuickJS calls with a runtime mutex.
 
 ### Failure and recovery
 
@@ -304,6 +307,8 @@ Current observability is log-centric:
 
 - Startup/shutdown and plugin load logs via `slog`.
 - Plugin stderr is surfaced in host logs.
+- Logging supports text/json output and optional direct export to VictoriaLogs via `/insert/jsonline`.
+- Log events include stable dimensions such as `source`, `component`, and request/session identifiers where available.
 - Gateway has only `healthz` and no metrics endpoint.
 - No structured event stream for turns/tools yet.
 

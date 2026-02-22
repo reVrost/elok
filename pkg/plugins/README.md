@@ -22,3 +22,7 @@
 - `hook.after_turn` -> ack object
 
 See `plugins/plan-mode/cmd/planmode/main.go` for a complete example plugin.
+
+The `plan-mode` example evaluates JS logic through QuickJS and hot-reloads
+`plugins/plan-mode/cmd/planmode/runtime/plan_mode.js` when the file changes.
+Override the script path with `ELOK_PLANMODE_SCRIPT=/absolute/path/to/plan_mode.js`.

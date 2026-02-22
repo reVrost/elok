@@ -81,8 +81,7 @@ This mirrors Pi/OpenClaw style extension points: register tools/commands, hook l
 
 #### Deferred (not v0)
 
-- Embedded Lua/goja/QuickJS runtimes.
-- Multi-language in-process plugin SDK.
+- General embedded multi-runtime plugin SDK in core (Lua/goja/QuickJS beyond targeted plugins).
 - Complex plugin marketplace/distribution flow.
 
 ### Persistence
@@ -97,3 +96,44 @@ This mirrors Pi/OpenClaw style extension points: register tools/commands, hook l
 - `llm.provider = "codex"` supports either:
   - ChatGPT/Codex subscription auth via `llm.codex_auth_path` (default `~/.codex/auth.json`).
   - OpenAI API key mode via `llm.api_key_env` (for example `OPENAI_API_KEY`).
+
+## Local Observability (VictoriaLogs)
+
+`elok` can export structured JSON logs directly to VictoriaLogs.
+
+1. Start VictoriaLogs:
+
+```bash
+docker compose up -d
+```
+
+2. Enable JSON logging + export in `~/.elok/config.toml`:
+
+```toml
+[logging]
+format = "json"
+level = "info"
+
+[observability]
+victoria_logs_url = "http://127.0.0.1:9428/insert/jsonline"
+victoria_logs_queue_size = 1024
+victoria_logs_flush_ms = 500
+victoria_logs_batch_size = 262144
+victoria_logs_timeout_ms = 3000
+```
+
+3. Run `elok`:
+
+```bash
+go run ./cmd/elok run
+```
+
+4. Inspect logs in VictoriaMetrics UI:
+
+- UI: `http://127.0.0.1:9428/select/vmui/`
+- Example query: `service:elok`
+- Useful fields for filtering:
+  - `source` (currently `core`)
+  - `component` (`gateway`, `agent`, `plugins`, `channels`)
+  - `request_id` (gateway calls)
+  - `session_id` (agent/session.send path)

@@ -59,6 +59,7 @@ func NewManager(log *slog.Logger, respond Responder) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	log = log.With("component", "channels")
 	m := &Manager{
 		log:      log,
 		respond:  respond,

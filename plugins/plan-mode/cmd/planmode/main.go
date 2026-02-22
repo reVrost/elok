@@ -2,22 +2,39 @@ package main
 
 import (
 	"bufio"
+	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/revrost/elok/pkg/plugins/protocol"
+	"modernc.org/quickjs"
 )
 
-type state struct {
-	mu      sync.RWMutex
-	enabled map[string]bool
-}
+const (
+	defaultScriptPath   = "plugins/plan-mode/cmd/planmode/runtime/plan_mode.js"
+	scriptPathEnv       = "ELOK_PLANMODE_SCRIPT"
+	scriptEvalTimeout   = 250 * time.Millisecond
+	scriptMemoryLimitMB = 32
+)
+
+//go:embed runtime/plan_mode.js
+var embeddedPlanModeScript string
 
 func main() {
-	st := &state{enabled: map[string]bool{}}
+	st := newSessionState()
+	rt := newScriptRuntime(resolveScriptPath())
+	defer func() {
+		if err := rt.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to close script runtime: %v\n", err)
+		}
+	}()
+
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
 
@@ -34,19 +51,19 @@ func main() {
 		if env.Type != protocol.TypeCall {
 			continue
 		}
-		handleCall(st, env)
+		handleCall(st, rt, env)
 	}
 	if err := scanner.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "stdin scanner error: %v\n", err)
 	}
 }
 
-func handleCall(st *state, env protocol.Envelope) {
+func handleCall(st *sessionState, rt *scriptRuntime, env protocol.Envelope) {
 	switch env.Method {
 	case "register":
 		sendResult(env.ID, protocol.RegisterResult{
 			ID:      "plan-mode",
-			Version: "0.1.0",
+			Version: "0.2.0",
 			Capabilities: protocol.Capabilities{
 				Commands: true,
 				Hooks:    true,
@@ -59,7 +76,11 @@ func handleCall(st *state, env protocol.Envelope) {
 			sendError(env.ID, "bad_params", err.Error())
 			return
 		}
-		out := handleCommand(st, in)
+		out, err := handleScriptCall[protocol.CommandHandleResult](st, rt, env.Method, in.SessionID, in)
+		if err != nil {
+			sendError(env.ID, "runtime_error", err.Error())
+			return
+		}
 		sendResult(env.ID, out)
 	case "hook.before_turn":
 		var in protocol.HookBeforeTurnParams
@@ -67,70 +88,296 @@ func handleCall(st *state, env protocol.Envelope) {
 			sendError(env.ID, "bad_params", err.Error())
 			return
 		}
-		out := handleBeforeTurn(st, in)
+		out, err := handleScriptCall[protocol.HookBeforeTurnResult](st, rt, env.Method, in.SessionID, in)
+		if err != nil {
+			sendError(env.ID, "runtime_error", err.Error())
+			return
+		}
 		sendResult(env.ID, out)
 	case "hook.after_turn":
-		sendResult(env.ID, map[string]any{"ok": true})
+		var in protocol.HookAfterTurnParams
+		if err := json.Unmarshal(env.Params, &in); err != nil {
+			sendError(env.ID, "bad_params", err.Error())
+			return
+		}
+		out, err := handleScriptCall[map[string]any](st, rt, env.Method, in.SessionID, in)
+		if err != nil {
+			sendError(env.ID, "runtime_error", err.Error())
+			return
+		}
+		sendResult(env.ID, out)
 	default:
 		sendError(env.ID, "method_not_found", "unsupported method: "+env.Method)
 	}
 }
 
-func handleCommand(st *state, in protocol.CommandHandleParams) protocol.CommandHandleResult {
-	text := strings.TrimSpace(in.Text)
-	if !strings.HasPrefix(text, "/plan") {
-		return protocol.CommandHandleResult{Handled: false}
+func handleScriptCall[T any](st *sessionState, rt *scriptRuntime, method, sessionID string, in any) (T, error) {
+	var zero T
+
+	reply, err := rt.Dispatch(method, in, st.Get(sessionID))
+	if err != nil {
+		return zero, err
 	}
-	parts := strings.Fields(text)
-	if len(parts) == 1 {
-		return protocol.CommandHandleResult{
-			Handled:  true,
-			Response: "usage: /plan on | /plan off | /plan status",
-		}
+	if err := st.Set(sessionID, reply.State); err != nil {
+		return zero, err
 	}
-	mode := strings.ToLower(parts[1])
-	switch mode {
-	case "on":
-		st.mu.Lock()
-		st.enabled[in.SessionID] = true
-		st.mu.Unlock()
-		return protocol.CommandHandleResult{Handled: true, Response: "plan mode: ON"}
-	case "off":
-		st.mu.Lock()
-		delete(st.enabled, in.SessionID)
-		st.mu.Unlock()
-		return protocol.CommandHandleResult{Handled: true, Response: "plan mode: OFF"}
-	case "status":
-		st.mu.RLock()
-		enabled := st.enabled[in.SessionID]
-		st.mu.RUnlock()
-		if enabled {
-			return protocol.CommandHandleResult{Handled: true, Response: "plan mode is ON"}
-		}
-		return protocol.CommandHandleResult{Handled: true, Response: "plan mode is OFF"}
-	default:
-		return protocol.CommandHandleResult{Handled: true, Response: "usage: /plan on | /plan off | /plan status"}
+
+	var out T
+	if err := json.Unmarshal(reply.Result, &out); err != nil {
+		return zero, fmt.Errorf("decode %s result: %w", method, err)
+	}
+	return out, nil
+}
+
+type sessionState struct {
+	mu      sync.RWMutex
+	session map[string]json.RawMessage
+}
+
+func newSessionState() *sessionState {
+	return &sessionState{
+		session: map[string]json.RawMessage{},
 	}
 }
 
-func handleBeforeTurn(st *state, in protocol.HookBeforeTurnParams) protocol.HookBeforeTurnResult {
-	st.mu.RLock()
-	enabled := st.enabled[in.SessionID]
-	st.mu.RUnlock()
-	if !enabled {
-		return protocol.HookBeforeTurnResult{UserText: in.UserText}
+func (s *sessionState) Get(sessionID string) json.RawMessage {
+	if strings.TrimSpace(sessionID) == "" {
+		return json.RawMessage(`{}`)
 	}
-	augmented := strings.TrimSpace(`
-You are in plan mode.
-Before writing the final answer, produce a concise execution plan.
-Then continue with the answer.
+	s.mu.RLock()
+	raw, ok := s.session[sessionID]
+	s.mu.RUnlock()
+	if !ok || len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return copyRawMessage(raw)
+}
 
-User request:
-` + in.UserText)
-	return protocol.HookBeforeTurnResult{
-		UserText:           augmented,
-		SystemPromptAppend: "Plan mode is enabled for this session.",
+func (s *sessionState) Set(sessionID string, raw json.RawMessage) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil
 	}
+	normalized, shouldDelete, err := normalizeState(raw)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if shouldDelete {
+		delete(s.session, sessionID)
+		return nil
+	}
+	s.session[sessionID] = normalized
+	return nil
+}
+
+func normalizeState(raw json.RawMessage) (normalized json.RawMessage, shouldDelete bool, err error) {
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`), false, nil
+	}
+
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return json.RawMessage(`{}`), false, nil
+	}
+	if trimmed == "null" {
+		return nil, true, nil
+	}
+
+	var value map[string]any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, false, fmt.Errorf("state must be an object or null: %w", err)
+	}
+	normalized, err = json.Marshal(value)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode normalized state: %w", err)
+	}
+	return normalized, false, nil
+}
+
+func copyRawMessage(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	cp := make([]byte, len(raw))
+	copy(cp, raw)
+	return json.RawMessage(cp)
+}
+
+type scriptRuntime struct {
+	mu            sync.Mutex
+	scriptPath    string
+	fingerprint   fileFingerprint
+	usingEmbedded bool
+	vm            *quickjs.VM
+}
+
+type fileFingerprint struct {
+	modTime time.Time
+	size    int64
+}
+
+type scriptReply struct {
+	Result json.RawMessage `json:"result"`
+	State  json.RawMessage `json:"state"`
+}
+
+func newScriptRuntime(scriptPath string) *scriptRuntime {
+	return &scriptRuntime{
+		scriptPath: scriptPath,
+	}
+}
+
+func (r *scriptRuntime) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.vm == nil {
+		return nil
+	}
+	err := r.vm.Close()
+	r.vm = nil
+	return err
+}
+
+func (r *scriptRuntime) Dispatch(method string, params any, state json.RawMessage) (scriptReply, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var empty scriptReply
+	if err := r.ensureLoaded(); err != nil {
+		return empty, err
+	}
+
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return empty, fmt.Errorf("encode params for %s: %w", method, err)
+	}
+	if len(state) == 0 {
+		state = json.RawMessage(`{}`)
+	}
+
+	out, err := r.vm.Call("dispatch", method, string(paramsJSON), string(state))
+	if err != nil {
+		return empty, fmt.Errorf("dispatch %s: %w", method, err)
+	}
+	replyRaw, ok := out.(string)
+	if !ok {
+		return empty, fmt.Errorf("dispatch %s: expected string response, got %T", method, out)
+	}
+
+	var reply scriptReply
+	if err := json.Unmarshal([]byte(replyRaw), &reply); err != nil {
+		return empty, fmt.Errorf("decode dispatch %s payload: %w", method, err)
+	}
+	if len(reply.Result) == 0 {
+		return empty, fmt.Errorf("dispatch %s: missing result field", method)
+	}
+	if len(reply.State) == 0 {
+		reply.State = state
+	}
+	return reply, nil
+}
+
+func (r *scriptRuntime) ensureLoaded() error {
+	path := strings.TrimSpace(r.scriptPath)
+	if path == "" {
+		if r.vm != nil {
+			return nil
+		}
+		return r.swapVM(embeddedPlanModeScript, true)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat script %s: %w", path, err)
+		}
+		if r.vm == nil || !r.usingEmbedded {
+			if err := r.swapVM(embeddedPlanModeScript, true); err != nil {
+				if r.vm != nil {
+					fmt.Fprintf(os.Stderr, "plan-mode: failed to load embedded fallback script: %v\n", err)
+					return nil
+				}
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "plan-mode: %s not found, using embedded script fallback\n", path)
+		}
+		return nil
+	}
+
+	fp := fileFingerprint{
+		modTime: info.ModTime().UTC(),
+		size:    info.Size(),
+	}
+	sameFile := r.vm != nil &&
+		!r.usingEmbedded &&
+		r.fingerprint.size == fp.size &&
+		r.fingerprint.modTime.Equal(fp.modTime)
+	if sameFile {
+		return nil
+	}
+
+	script, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read script %s: %w", path, err)
+	}
+	if err := r.swapVM(string(script), false); err != nil {
+		if r.vm != nil {
+			fmt.Fprintf(os.Stderr, "plan-mode: failed to reload script %s, keeping previous runtime: %v\n", path, err)
+			return nil
+		}
+		return fmt.Errorf("load script %s: %w", path, err)
+	}
+
+	wasLoaded := !r.fingerprint.modTime.IsZero() || r.fingerprint.size > 0
+	r.fingerprint = fp
+	if wasLoaded {
+		fmt.Fprintf(os.Stderr, "plan-mode: reloaded script %s\n", path)
+	} else {
+		fmt.Fprintf(os.Stderr, "plan-mode: loaded script %s\n", path)
+	}
+	return nil
+}
+
+func (r *scriptRuntime) swapVM(script string, usingEmbedded bool) error {
+	vm, err := quickjs.NewVM()
+	if err != nil {
+		return fmt.Errorf("create vm: %w", err)
+	}
+	vm.SetEvalTimeout(scriptEvalTimeout)
+	vm.SetMemoryLimit(scriptMemoryLimitMB * 1024 * 1024)
+
+	if _, err := vm.Eval(script, quickjs.EvalGlobal); err != nil {
+		_ = vm.Close()
+		return fmt.Errorf("evaluate script: %w", err)
+	}
+	hasDispatchAny, err := vm.Eval("typeof dispatch === 'function'", quickjs.EvalGlobal)
+	if err != nil {
+		_ = vm.Close()
+		return fmt.Errorf("check dispatch symbol: %w", err)
+	}
+	hasDispatch, ok := hasDispatchAny.(bool)
+	if !ok || !hasDispatch {
+		_ = vm.Close()
+		return fmt.Errorf("script must define function dispatch(method, paramsJSON, stateJSON)")
+	}
+
+	old := r.vm
+	r.vm = vm
+	r.usingEmbedded = usingEmbedded
+	if old != nil {
+		_ = old.Close()
+	}
+	return nil
+}
+
+func resolveScriptPath() string {
+	path := strings.TrimSpace(os.Getenv(scriptPathEnv))
+	if path == "" {
+		path = defaultScriptPath
+	}
+	return filepath.Clean(path)
 }
 
 func sendResult(id string, result any) {

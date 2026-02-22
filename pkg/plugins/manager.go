@@ -45,6 +45,7 @@ func NewManager(log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	log = log.With("component", "plugins")
 	return &Manager{log: log}
 }
 

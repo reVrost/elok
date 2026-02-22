@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -21,12 +22,14 @@ type Server struct {
 	agent    *agent.Service
 	channels *channels.Manager
 	http     *http.Server
+	seq      uint64
 }
 
 func NewServer(addr string, svc *agent.Service, channelManager *channels.Manager, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
+	log = log.With("component", "gateway")
 	mux := http.NewServeMux()
 	s := &Server{
 		addr:     addr,
@@ -105,7 +108,23 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		if req.Type != EnvelopeTypeCall {
 			continue
 		}
-		resp := s.handleCall(ctx, req)
+		requestID := s.normalizeRequestID(req.ID)
+		if req.ID == "" {
+			req.ID = requestID
+		}
+		reqLog := s.log.With("request_id", requestID, "method", req.Method)
+		started := time.Now()
+		resp := s.handleCall(ctx, req, reqLog)
+		latency := time.Since(started).Milliseconds()
+		if resp.Type == EnvelopeTypeError {
+			code := ""
+			if resp.Error != nil {
+				code = resp.Error.Code
+			}
+			reqLog.Warn("gateway call failed", "code", code, "latency_ms", latency)
+		} else {
+			reqLog.Debug("gateway call completed", "latency_ms", latency)
+		}
 		if err := wsjson.Write(ctx, conn, resp); err != nil {
 			s.log.Debug("ws write failed", "error", err)
 			return
@@ -113,7 +132,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleCall(ctx context.Context, req Envelope) Envelope {
+func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logger) Envelope {
 	switch req.Method {
 	case "system.ping":
 		return resultEnvelope(req.ID, map[string]any{"ok": true, "ts": time.Now().UTC().Format(time.RFC3339)})
@@ -126,7 +145,13 @@ func (s *Server) handleCall(ctx context.Context, req Envelope) Envelope {
 		}
 		res, err := s.agent.Send(ctx, in.SessionID, in.Text)
 		if err != nil {
+			if reqLog != nil {
+				reqLog.Warn("session.send failed", "session_id", in.SessionID, "error", err)
+			}
 			return errorEnvelope(req.ID, "send_failed", err.Error())
+		}
+		if reqLog != nil {
+			reqLog.Info("session.send completed", "session_id", res.SessionID, "handled_command", res.HandledCommand)
 		}
 		return resultEnvelope(req.ID, SessionSendResult{
 			SessionID:      res.SessionID,
@@ -161,6 +186,14 @@ func (s *Server) handleCall(ctx context.Context, req Envelope) Envelope {
 	default:
 		return errorEnvelope(req.ID, "method_not_found", fmt.Sprintf("unknown method: %s", req.Method))
 	}
+}
+
+func (s *Server) normalizeRequestID(id string) string {
+	if id != "" {
+		return id
+	}
+	next := atomic.AddUint64(&s.seq, 1)
+	return fmt.Sprintf("gw-%d", next)
 }
 
 func (s *Server) channelStatusSnapshot() []ChannelStatus {

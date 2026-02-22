@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/revrost/elok/pkg/config"
 	"github.com/revrost/elok/pkg/gateway"
 	"github.com/revrost/elok/pkg/llm"
+	"github.com/revrost/elok/pkg/observability"
 	"github.com/revrost/elok/pkg/plugins"
 	"github.com/revrost/elok/pkg/store"
 	"github.com/revrost/elok/pkg/tools"
@@ -64,7 +66,18 @@ func runCommand(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log, logCloser, err := observability.NewLogger(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if logCloser == nil {
+			return
+		}
+		if closeErr := logCloser.Close(); closeErr != nil {
+			_, _ = io.WriteString(os.Stderr, "failed to close log exporter: "+closeErr.Error()+"\n")
+		}
+	}()
 	slog.SetDefault(log)
 
 	st, err := store.Open(cfg.DBPath)
@@ -86,7 +99,7 @@ func runCommand(args []string) error {
 		_ = pluginManager.Stop(shutdownCtx)
 	}()
 
-	agentSvc := agent.NewService(st, llm.New(cfg.LLM), pluginManager, tools.NewRegistry())
+	agentSvc := agent.NewService(st, llm.New(cfg.LLM), pluginManager, tools.NewRegistry(), log)
 
 	channelManager := channels.NewManager(log, func(ctx context.Context, sessionID, text string) (string, error) {
 		result, err := agentSvc.Send(ctx, sessionID, text)

@@ -1,0 +1,15 @@
+services:
+  victoria-logs:
+    image: victoriametrics/victoria-logs:latest
+    container_name: elok-victoria-logs
+    ports:
+      - "9428:9428"
+    command:
+      - "-storageDataPath=/victoria-logs-data"
+      - "-retentionPeriod=14d"
+    volumes:
+      - victoria_logs_data:/victoria-logs-data
+    restart: unless-stopped
+
+volumes:
+  victoria_logs_data:

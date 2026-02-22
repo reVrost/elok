@@ -1,6 +1,17 @@
 db_path = "~/.elok/elok.db"
 listen_addr = "127.0.0.1:7777"
 
+[logging]
+format = "text" # text|json
+level = "info"  # debug|info|warn|error
+
+[observability]
+victoria_logs_url = ""
+victoria_logs_queue_size = 1024
+victoria_logs_flush_ms = 500
+victoria_logs_batch_size = 262144
+victoria_logs_timeout_ms = 3000
+
 [llm]
 provider = "mock"
 model = "mock/default"

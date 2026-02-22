@@ -17,12 +17,14 @@ const (
 )
 
 type Config struct {
-	DBPath     string         `toml:"db_path"`
-	ListenAddr string         `toml:"listen_addr"`
-	LLM        LLMConfig      `toml:"llm"`
-	Plugins    PluginConfig   `toml:"plugins"`
-	Gateway    GatewayConfig  `toml:"gateway"`
-	WhatsApp   WhatsAppConfig `toml:"whatsapp"`
+	DBPath        string              `toml:"db_path"`
+	ListenAddr    string              `toml:"listen_addr"`
+	Logging       LoggingConfig       `toml:"logging"`
+	LLM           LLMConfig           `toml:"llm"`
+	Plugins       PluginConfig        `toml:"plugins"`
+	Gateway       GatewayConfig       `toml:"gateway"`
+	WhatsApp      WhatsAppConfig      `toml:"whatsapp"`
+	Observability ObservabilityConfig `toml:"observability"`
 }
 
 type GatewayConfig struct {
@@ -40,6 +42,19 @@ type LLMConfig struct {
 	APIKeyEnv     string `toml:"api_key_env"`
 	BaseURL       string `toml:"base_url"`
 	CodexAuthPath string `toml:"codex_auth_path"`
+}
+
+type LoggingConfig struct {
+	Format string `toml:"format"`
+	Level  string `toml:"level"`
+}
+
+type ObservabilityConfig struct {
+	VictoriaLogsURL       string `toml:"victoria_logs_url"`
+	VictoriaLogsQueueSize int    `toml:"victoria_logs_queue_size"`
+	VictoriaLogsFlushMS   int    `toml:"victoria_logs_flush_ms"`
+	VictoriaLogsBatchSize int    `toml:"victoria_logs_batch_size"`
+	VictoriaLogsTimeoutMS int    `toml:"victoria_logs_timeout_ms"`
 }
 
 type PluginConfig struct {
@@ -89,6 +104,10 @@ func Default() Config {
 	return Config{
 		DBPath:     filepath.Join(DefaultDir(), "elok.db"),
 		ListenAddr: "127.0.0.1:7777",
+		Logging: LoggingConfig{
+			Format: "text",
+			Level:  "info",
+		},
 		LLM: LLMConfig{
 			Provider:      "mock",
 			Model:         "mock/default",
@@ -109,6 +128,13 @@ func Default() Config {
 		WhatsApp: WhatsAppConfig{
 			Enabled:   false,
 			StorePath: filepath.Join(DefaultDir(), "whatsapp.db"),
+		},
+		Observability: ObservabilityConfig{
+			VictoriaLogsURL:       "",
+			VictoriaLogsQueueSize: 1024,
+			VictoriaLogsFlushMS:   500,
+			VictoriaLogsBatchSize: 256 * 1024,
+			VictoriaLogsTimeoutMS: 3000,
 		},
 	}
 }
@@ -137,6 +163,12 @@ func Load(path string) (Config, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = Default().ListenAddr
 	}
+	if cfg.Logging.Format == "" {
+		cfg.Logging.Format = Default().Logging.Format
+	}
+	if cfg.Logging.Level == "" {
+		cfg.Logging.Level = Default().Logging.Level
+	}
 	if cfg.LLM.Provider == "" {
 		cfg.LLM.Provider = Default().LLM.Provider
 	}
@@ -157,6 +189,22 @@ func Load(path string) (Config, error) {
 		cfg.WhatsApp.StorePath = Default().WhatsApp.StorePath
 	}
 	cfg.WhatsApp.StorePath = ExpandPath(cfg.WhatsApp.StorePath)
+
+	if cfg.Observability.VictoriaLogsURL == "" {
+		cfg.Observability.VictoriaLogsURL = Default().Observability.VictoriaLogsURL
+	}
+	if cfg.Observability.VictoriaLogsQueueSize <= 0 {
+		cfg.Observability.VictoriaLogsQueueSize = Default().Observability.VictoriaLogsQueueSize
+	}
+	if cfg.Observability.VictoriaLogsFlushMS <= 0 {
+		cfg.Observability.VictoriaLogsFlushMS = Default().Observability.VictoriaLogsFlushMS
+	}
+	if cfg.Observability.VictoriaLogsBatchSize <= 0 {
+		cfg.Observability.VictoriaLogsBatchSize = Default().Observability.VictoriaLogsBatchSize
+	}
+	if cfg.Observability.VictoriaLogsTimeoutMS <= 0 {
+		cfg.Observability.VictoriaLogsTimeoutMS = Default().Observability.VictoriaLogsTimeoutMS
+	}
 	return cfg, nil
 }
 

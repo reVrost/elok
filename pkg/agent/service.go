@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/revrost/elok/pkg/llm"
 	"github.com/revrost/elok/pkg/plugins"
@@ -19,6 +21,7 @@ type Service struct {
 	plugins      *plugins.Manager
 	tools        *tools.Registry
 	systemPrompt string
+	log          *slog.Logger
 }
 
 type SendResult struct {
@@ -28,9 +31,12 @@ type SendResult struct {
 	HandledCommand bool   `json:"handled_command"`
 }
 
-func NewService(st *store.Store, llmClient llm.Client, pluginManager *plugins.Manager, toolRegistry *tools.Registry) *Service {
+func NewService(st *store.Store, llmClient llm.Client, pluginManager *plugins.Manager, toolRegistry *tools.Registry, log *slog.Logger) *Service {
 	if toolRegistry == nil {
 		toolRegistry = tools.NewRegistry()
+	}
+	if log == nil {
+		log = slog.Default()
 	}
 	return &Service{
 		store:        st,
@@ -38,10 +44,27 @@ func NewService(st *store.Store, llmClient llm.Client, pluginManager *plugins.Ma
 		plugins:      pluginManager,
 		tools:        toolRegistry,
 		systemPrompt: "You are elok, a pragmatic local agent.",
+		log:          log.With("component", "agent"),
 	}
 }
 
-func (s *Service) Send(ctx context.Context, sessionID, text string) (SendResult, error) {
+func (s *Service) Send(ctx context.Context, sessionID, text string) (res SendResult, err error) {
+	started := time.Now()
+	defer func() {
+		if s.log == nil {
+			return
+		}
+		attrs := []any{
+			"session_id", sessionID,
+			"latency_ms", time.Since(started).Milliseconds(),
+		}
+		if err != nil {
+			s.log.Warn("agent turn failed", append(attrs, "error", err.Error())...)
+			return
+		}
+		s.log.Info("agent turn completed", append(attrs, "handled_command", res.HandledCommand)...)
+	}()
+
 	if strings.TrimSpace(text) == "" {
 		return SendResult{}, fmt.Errorf("text is required")
 	}

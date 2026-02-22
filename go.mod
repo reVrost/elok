@@ -8,6 +8,7 @@ require (
 	github.com/ncruces/go-sqlite3 v0.30.5
 	go.mau.fi/whatsmeow v0.0.0-20260219150138-7ae702b1eed4
 	google.golang.org/protobuf v1.36.11
+	modernc.org/quickjs v0.17.1
 	modernc.org/sqlite v1.46.1
 )
 
@@ -34,6 +35,7 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
 	modernc.org/libc v1.67.6 // indirect
+	modernc.org/libquickjs v0.12.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
