@@ -1,0 +1,23 @@
+db_path = "~/.elok/elok.db"
+listen_addr = "127.0.0.1:7777"
+
+[llm]
+provider = "mock"
+model = "mock/default"
+api_key_env = "OPENROUTER_API_KEY"
+base_url = "https://openrouter.ai/api/v1"
+codex_auth_path = "~/.codex/auth.json"
+
+[gateway]
+enable_ws = true
+
+[whatsapp]
+enabled = false
+store_path = "~/.elok/whatsapp.db"
+
+[plugins]
+enabled = true
+
+[[plugins.entries]]
+id = "plan-mode"
+command = ["go", "run", "./plugins/plan-mode/cmd/planmode"]

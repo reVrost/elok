@@ -1,0 +1,151 @@
+package agent
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"strings"
+
+	"github.com/revrost/elok/pkg/llm"
+	"github.com/revrost/elok/pkg/plugins"
+	"github.com/revrost/elok/pkg/store"
+	"github.com/revrost/elok/pkg/tools"
+)
+
+type Service struct {
+	store        *store.Store
+	llm          llm.Client
+	plugins      *plugins.Manager
+	tools        *tools.Registry
+	systemPrompt string
+}
+
+type SendResult struct {
+	SessionID      string `json:"session_id"`
+	UserText       string `json:"user_text"`
+	AssistantText  string `json:"assistant_text"`
+	HandledCommand bool   `json:"handled_command"`
+}
+
+func NewService(st *store.Store, llmClient llm.Client, pluginManager *plugins.Manager, toolRegistry *tools.Registry) *Service {
+	if toolRegistry == nil {
+		toolRegistry = tools.NewRegistry()
+	}
+	return &Service{
+		store:        st,
+		llm:          llmClient,
+		plugins:      pluginManager,
+		tools:        toolRegistry,
+		systemPrompt: "You are elok, a pragmatic local agent.",
+	}
+}
+
+func (s *Service) Send(ctx context.Context, sessionID, text string) (SendResult, error) {
+	if strings.TrimSpace(text) == "" {
+		return SendResult{}, fmt.Errorf("text is required")
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = newSessionID()
+	}
+
+	userText := strings.TrimSpace(text)
+	if _, err := s.store.AppendMessage(ctx, sessionID, "user", userText); err != nil {
+		return SendResult{}, fmt.Errorf("store user message: %w", err)
+	}
+
+	if s.plugins != nil {
+		handled, response, err := s.plugins.HandleCommand(ctx, sessionID, userText)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if handled {
+			if _, err := s.store.AppendMessage(ctx, sessionID, "assistant", response); err != nil {
+				return SendResult{}, fmt.Errorf("store command response: %w", err)
+			}
+			return SendResult{
+				SessionID:      sessionID,
+				UserText:       userText,
+				AssistantText:  response,
+				HandledCommand: true,
+			}, nil
+		}
+	}
+
+	effectiveUserText := userText
+	systemPrompt := s.systemPrompt
+	if s.plugins != nil {
+		mutated, systemAppend, err := s.plugins.BeforeTurn(ctx, sessionID, userText)
+		if err != nil {
+			return SendResult{}, err
+		}
+		if strings.TrimSpace(mutated) != "" {
+			effectiveUserText = mutated
+		}
+		if strings.TrimSpace(systemAppend) != "" {
+			systemPrompt += "\n\n" + systemAppend
+		}
+	}
+
+	messages, err := s.store.ListMessages(ctx, sessionID, 40)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("load session messages: %w", err)
+	}
+	transcript := make([]llm.Message, 0, len(messages)+1)
+	for _, msg := range messages {
+		if msg.Role != "user" && msg.Role != "assistant" {
+			continue
+		}
+		transcript = append(transcript, llm.Message{Role: msg.Role, Content: msg.Content})
+	}
+	if effectiveUserText != userText {
+		transcript = append(transcript, llm.Message{Role: "user", Content: effectiveUserText})
+	}
+
+	response, err := s.llm.Complete(ctx, llm.CompletionRequest{
+		SystemPrompt: systemPrompt,
+		Messages:     transcript,
+	})
+	if err != nil {
+		return SendResult{}, fmt.Errorf("llm complete: %w", err)
+	}
+
+	assistantText := strings.TrimSpace(response.Text)
+	if assistantText == "" {
+		assistantText = "(empty assistant response)"
+	}
+	if _, err := s.store.AppendMessage(ctx, sessionID, "assistant", assistantText); err != nil {
+		return SendResult{}, fmt.Errorf("store assistant message: %w", err)
+	}
+
+	if s.plugins != nil {
+		s.plugins.AfterTurn(ctx, plugins.AfterTurnParams{
+			SessionID:     sessionID,
+			UserText:      userText,
+			AssistantText: assistantText,
+		})
+	}
+
+	return SendResult{
+		SessionID:      sessionID,
+		UserText:       userText,
+		AssistantText:  assistantText,
+		HandledCommand: false,
+	}, nil
+}
+
+func (s *Service) ListSessions(ctx context.Context, limit int) ([]store.Session, error) {
+	return s.store.ListSessions(ctx, limit)
+}
+
+func (s *Service) ListMessages(ctx context.Context, sessionID string, limit int) ([]store.Message, error) {
+	return s.store.ListMessages(ctx, sessionID, limit)
+}
+
+func newSessionID() string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return "session-fallback"
+	}
+	return "s_" + hex.EncodeToString(buf)
+}

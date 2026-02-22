@@ -1,0 +1,45 @@
+{
+  "methods": {
+    "system.ping": {
+      "params": {},
+      "result": {
+        "ok": "boolean",
+        "ts": "rfc3339"
+      }
+    },
+    "system.channels": {
+      "params": {},
+      "result": {
+        "channels": "ChannelStatus[]"
+      }
+    },
+    "session.send": {
+      "params": {
+        "session_id": "string?",
+        "text": "string"
+      },
+      "result": {
+        "session_id": "string",
+        "assistant_text": "string",
+        "handled_command": "boolean"
+      }
+    },
+    "session.list": {
+      "params": {
+        "limit": "number?"
+      },
+      "result": {
+        "sessions": "Session[]"
+      }
+    },
+    "session.messages": {
+      "params": {
+        "session_id": "string",
+        "limit": "number?"
+      },
+      "result": {
+        "messages": "Message[]"
+      }
+    }
+  }
+}
