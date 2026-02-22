@@ -48,6 +48,7 @@ func (m *Manager) startWhatsApp(ctx context.Context, cfg config.WhatsAppConfig) 
 			m.markSeen(whatsappChannelID, time.Now().UTC())
 			m.onInboundText(inboundText{
 				ChannelID: whatsappChannelID,
+				TenantID:  m.defaultTenantID,
 				ChatID:    msg.ChatID,
 				SessionID: "wa:" + msg.ChatID,
 				Text:      msg.Text,

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,8 +42,6 @@ func run(args []string) error {
 		return runCommand(args[1:])
 	case "migrate":
 		return migrateCommand(args[1:])
-	case "init-config":
-		return initConfigCommand(args[1:])
 	case "version":
 		fmt.Printf("elok %s\n", version)
 		return nil
@@ -61,6 +60,13 @@ func runCommand(args []string) error {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		return err
+	}
+	if err := ensureConfigFile(*configPath, cfg); err != nil {
+		return err
+	}
+	if cfg.Tenancy.Mode != config.TenancyModeSingle {
+		// TODO(multi-tenant): enable this once auth-scoped tenant resolution and storage isolation are implemented end-to-end.
+		return fmt.Errorf("tenancy.mode=%q is not implemented yet; use %q for now", cfg.Tenancy.Mode, config.TenancyModeSingle)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -101,7 +107,7 @@ func runCommand(args []string) error {
 
 	agentSvc := agent.NewService(st, llm.New(cfg.LLM), pluginManager, tools.NewRegistry(), log)
 
-	channelManager := channels.NewManager(log, func(ctx context.Context, sessionID, text string) (string, error) {
+	channelManager := channels.NewManager(log, cfg.Tenancy.DefaultTenantID, func(ctx context.Context, sessionID, text string) (string, error) {
 		result, err := agentSvc.Send(ctx, sessionID, text)
 		if err != nil {
 			return "", err
@@ -117,7 +123,7 @@ func runCommand(args []string) error {
 		}
 	}()
 
-	gatewayServer := gateway.NewServer(cfg.ListenAddr, agentSvc, channelManager, log)
+	gatewayServer := gateway.NewServer(cfg.ListenAddr, agentSvc, channelManager, cfg.Tenancy.DefaultTenantID, log)
 
 	err = gatewayServer.Run(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
@@ -136,6 +142,10 @@ func migrateCommand(args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Tenancy.Mode != config.TenancyModeSingle {
+		// TODO(multi-tenant): wire tenant-aware migrations once tenancy.mode=multi is implemented.
+		return fmt.Errorf("tenancy.mode=%q is not implemented yet; use %q for now", cfg.Tenancy.Mode, config.TenancyModeSingle)
+	}
 	st, err := store.Open(cfg.DBPath)
 	if err != nil {
 		return err
@@ -150,15 +160,22 @@ func migrateCommand(args []string) error {
 	return nil
 }
 
-func initConfigCommand(args []string) error {
-	fs := flag.NewFlagSet("init-config", flag.ContinueOnError)
-	path := fs.String("path", config.DefaultConfigPath(), "output config path")
-	if err := fs.Parse(args); err != nil {
-		return err
+func ensureConfigFile(path string, cfg config.Config) error {
+	if strings.TrimSpace(path) == "" {
+		path = config.DefaultConfigPath()
 	}
-	if err := config.Save(*path, config.Default()); err != nil {
-		return err
+	path = config.ExpandPath(path)
+
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
 	}
-	fmt.Printf("wrote %s\n", *path)
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat config: %w", err)
+	}
+	if err := config.Save(path, cfg); err != nil {
+		return fmt.Errorf("write default config: %w", err)
+	}
+	fmt.Printf("wrote %s\n", path)
 	return nil
 }

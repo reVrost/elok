@@ -17,6 +17,7 @@
 - **First plugin target**: `plan-mode` plugin (WhatsApp is no longer the first plugin target).
 - **Global state location**: all runtime/config state under `~/.elok`.
 - **Config format**: TOML at `~/.elok/config.toml`.
+- **Tenancy mode**: `single` today; `multi` is reserved as TODO.
 
 ## What “extensible” means here
 
@@ -137,3 +138,45 @@ go run ./cmd/elok run
   - `component` (`gateway`, `agent`, `plugins`, `channels`)
   - `request_id` (gateway calls)
   - `session_id` (agent/session.send path)
+
+## Web UI (Embedded PWA)
+
+The chat UI is a SvelteKit PWA embedded directly into the `elok` binary.
+
+- Source: `ui/src/*`
+- Embedded assets: `ui/dist/*` via `ui/embed.go`
+- Served by gateway at `/` with SPA fallback to `index.html`
+
+Build UI assets before running or committing UI changes:
+
+```bash
+cd ui
+npm install
+npm run build
+```
+
+Then run elok:
+
+```bash
+go run ./cmd/elok run
+```
+
+Open:
+
+- `http://127.0.0.1:7777/` for chat UI
+- `ws://127.0.0.1:7777/ws` for gateway RPC
+
+## Dev Loop (Air)
+
+Run the hot-reload dev loop:
+
+```bash
+make ui-install
+make dev
+```
+
+Behavior:
+
+- Go changes: rebuild `./tmp/elok` and restart.
+- UI changes under `ui/` (excluding `ui/dist`, `.svelte-kit`, `node_modules`): run `make ui`, then rebuild/restart Go binary.
+- No UI changes: skip UI build for faster loop.

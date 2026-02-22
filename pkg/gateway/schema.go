@@ -27,6 +27,7 @@ type EnvelopeError struct {
 
 type SessionSendParams struct {
 	SessionID string `json:"session_id"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	Text      string `json:"text"`
 }
 
@@ -37,11 +38,13 @@ type SessionSendResult struct {
 }
 
 type SessionListParams struct {
-	Limit int `json:"limit"`
+	TenantID string `json:"tenant_id,omitempty"`
+	Limit    int    `json:"limit"`
 }
 
 type SessionMessagesParams struct {
 	SessionID string `json:"session_id"`
+	TenantID  string `json:"tenant_id,omitempty"`
 	Limit     int    `json:"limit"`
 }
 

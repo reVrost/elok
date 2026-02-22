@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/revrost/elok/pkg/tenantctx"
 	_ "modernc.org/sqlite"
 )
 
@@ -21,7 +22,14 @@ type Store struct {
 	db *sql.DB
 }
 
+type ChatStore interface {
+	AppendMessage(ctx context.Context, tenantID, sessionID, role, content string) (int64, error)
+	ListSessions(ctx context.Context, tenantID string, limit int) ([]Session, error)
+	ListMessages(ctx context.Context, tenantID, sessionID string, limit int) ([]Message, error)
+}
+
 type Session struct {
+	TenantID      string    `json:"tenant_id,omitempty"`
 	ID            string    `json:"id"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -30,6 +38,7 @@ type Session struct {
 
 type Message struct {
 	ID        int64     `json:"id"`
+	TenantID  string    `json:"tenant_id,omitempty"`
 	SessionID string    `json:"session_id"`
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
@@ -66,6 +75,14 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
+	if err := s.ensureMigrationsTable(ctx); err != nil {
+		return err
+	}
+	applied, err := s.appliedMigrations(ctx)
+	if err != nil {
+		return err
+	}
+
 	entries, err := migrationFS.ReadDir("migrations")
 	if err != nil {
 		return fmt.Errorf("read migrations: %w", err)
@@ -79,48 +96,102 @@ func (s *Store) Migrate(ctx context.Context) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if applied[name] {
+			continue
+		}
 		data, err := migrationFS.ReadFile(filepath.Join("migrations", name))
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
-		if _, err := s.db.ExecContext(ctx, string(data)); err != nil {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin migration %s: %w", name, err)
+		}
+		if _, err := tx.ExecContext(ctx, string(data)); err != nil {
+			_ = tx.Rollback()
 			return fmt.Errorf("execute migration %s: %w", name, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO schema_migrations (name, applied_at)
+VALUES (?, CURRENT_TIMESTAMP)
+`, name); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("record migration %s: %w", name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", name, err)
 		}
 	}
 	return nil
 }
 
-func (s *Store) UpsertSession(ctx context.Context, sessionID string) error {
+func (s *Store) ensureMigrationsTable(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  name TEXT PRIMARY KEY,
+  applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+`)
+	if err != nil {
+		return fmt.Errorf("ensure schema_migrations table: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) appliedMigrations(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM schema_migrations`)
+	if err != nil {
+		return nil, fmt.Errorf("query applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan applied migration: %w", err)
+		}
+		applied[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate applied migrations: %w", err)
+	}
+	return applied, nil
+}
+
+func (s *Store) UpsertSession(ctx context.Context, tenantID, sessionID string) error {
+	tenantID = tenantctx.Normalize(tenantID)
 	if strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("session id is required")
 	}
 	_, err := s.db.ExecContext(ctx, `
-INSERT INTO sessions (id, created_at, updated_at, last_message_at)
-VALUES (?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-ON CONFLICT(id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-`, sessionID)
+INSERT INTO sessions (tenant_id, id, created_at, updated_at, last_message_at)
+VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+ON CONFLICT(tenant_id, id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+`, tenantID, sessionID)
 	if err != nil {
 		return fmt.Errorf("upsert session: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) AppendMessage(ctx context.Context, sessionID, role, content string) (int64, error) {
-	if err := s.UpsertSession(ctx, sessionID); err != nil {
+func (s *Store) AppendMessage(ctx context.Context, tenantID, sessionID, role, content string) (int64, error) {
+	tenantID = tenantctx.Normalize(tenantID)
+	if err := s.UpsertSession(ctx, tenantID, sessionID); err != nil {
 		return 0, err
 	}
 	res, err := s.db.ExecContext(ctx, `
-INSERT INTO messages (session_id, role, content, created_at)
-VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-`, sessionID, role, content)
+INSERT INTO messages (tenant_id, session_id, role, content, created_at)
+VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+`, tenantID, sessionID, role, content)
 	if err != nil {
 		return 0, fmt.Errorf("insert message: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
 UPDATE sessions
 SET updated_at = CURRENT_TIMESTAMP, last_message_at = CURRENT_TIMESTAMP
-WHERE id = ?
-`, sessionID)
+WHERE tenant_id = ? AND id = ?
+`, tenantID, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("update session timestamps: %w", err)
 	}
@@ -131,16 +202,18 @@ WHERE id = ?
 	return id, nil
 }
 
-func (s *Store) ListSessions(ctx context.Context, limit int) ([]Session, error) {
+func (s *Store) ListSessions(ctx context.Context, tenantID string, limit int) ([]Session, error) {
+	tenantID = tenantctx.Normalize(tenantID)
 	if limit <= 0 {
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, created_at, updated_at, last_message_at
+SELECT tenant_id, id, created_at, updated_at, last_message_at
 FROM sessions
+WHERE tenant_id = ?
 ORDER BY last_message_at DESC
 LIMIT ?
-`, limit)
+`, tenantID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -149,7 +222,7 @@ LIMIT ?
 	out := make([]Session, 0)
 	for rows.Next() {
 		var session Session
-		if err := rows.Scan(&session.ID, &session.CreatedAt, &session.UpdatedAt, &session.LastMessageAt); err != nil {
+		if err := rows.Scan(&session.TenantID, &session.ID, &session.CreatedAt, &session.UpdatedAt, &session.LastMessageAt); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, session)
@@ -160,17 +233,18 @@ LIMIT ?
 	return out, nil
 }
 
-func (s *Store) ListMessages(ctx context.Context, sessionID string, limit int) ([]Message, error) {
+func (s *Store) ListMessages(ctx context.Context, tenantID, sessionID string, limit int) ([]Message, error) {
+	tenantID = tenantctx.Normalize(tenantID)
 	if limit <= 0 {
 		limit = 100
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, session_id, role, content, created_at
+SELECT id, tenant_id, session_id, role, content, created_at
 FROM messages
-WHERE session_id = ?
+WHERE tenant_id = ? AND session_id = ?
 ORDER BY id DESC
 LIMIT ?
-`, sessionID, limit)
+`, tenantID, sessionID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list messages: %w", err)
 	}
@@ -179,7 +253,7 @@ LIMIT ?
 	reversed := make([]Message, 0)
 	for rows.Next() {
 		var msg Message
-		if err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &msg.Content, &msg.CreatedAt); err != nil {
+		if err := rows.Scan(&msg.ID, &msg.TenantID, &msg.SessionID, &msg.Role, &msg.Content, &msg.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		reversed = append(reversed, msg)

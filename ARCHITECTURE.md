@@ -40,7 +40,7 @@ This is a pragmatic "agent host scaffold" rather than a full autonomous planner/
 
 ## 3. Repository Map
 
-- `cmd/elok/main.go`: CLI entrypoint (`run`, `migrate`, `init-config`, `version`).
+- `cmd/elok/main.go`: CLI entrypoint (`run`, `migrate`, `version`).
 - `pkg/config/config.go`: config schema, defaults, load/save, path expansion.
 - `pkg/agent/service.go`: core turn processing and session APIs.
 - `pkg/gateway/server.go`: WS/HTTP transport, method dispatch.
@@ -63,13 +63,13 @@ This is a pragmatic "agent host scaffold" rather than a full autonomous planner/
 3. Opens SQLite store and applies embedded migrations.
 4. Starts plugin manager, which starts each configured plugin process and calls `register`.
 5. Constructs `agent.Service` with store + llm client + plugin manager + tool registry.
-6. Starts gateway HTTP server (`/healthz`, `/ws`).
+6. Starts gateway HTTP server (`/healthz`, `/ws`, and embedded UI on `/`).
 7. On signal (`SIGINT`/`SIGTERM`), shuts down gateway and plugin processes.
 
 Other commands:
 
 - `elok migrate`: load config and apply migrations.
-- `elok init-config`: write default config TOML.
+- `elok run`: auto-writes a default config TOML when the configured path does not exist.
 - `elok version`: print build version string.
 
 ## 5. Agentic Loop (Current Implementation)
@@ -168,7 +168,7 @@ This plugin is effectively prompt shaping + command UX, not a planner/executor e
 
 ## 7. Gateway and Client Protocol
 
-Transport: WebSocket endpoint `/ws` plus HTTP `/healthz`.
+Transport: WebSocket endpoint `/ws` plus HTTP `/healthz`, `/status/channels`, and embedded static UI on `/`.
 
 ### Envelope contract
 
@@ -186,6 +186,12 @@ Supported methods:
 - `session.send`: calls agent loop and returns `{session_id, assistant_text, handled_command}`.
 - `session.list`: returns recent sessions by `last_message_at DESC`.
 - `session.messages`: returns messages for a session, oldest-first in final payload.
+
+### UI behavior
+
+- Root route (`/`) serves embedded SvelteKit static assets from `ui/dist`.
+- Unknown GET/HEAD paths fall back to `index.html` for SPA client-side routing.
+- If embedded assets are unavailable at build time, gateway logs a warning and only API routes are served.
 
 ### Error behavior
 
@@ -309,14 +315,14 @@ Current observability is log-centric:
 - Plugin stderr is surfaced in host logs.
 - Logging supports text/json output and optional direct export to VictoriaLogs via `/insert/jsonline`.
 - Log events include stable dimensions such as `source`, `component`, and request/session identifiers where available.
-- Gateway has only `healthz` and no metrics endpoint.
+- Gateway exposes `healthz`, `status/channels`, WS RPC, and embedded UI; there is still no metrics endpoint.
 - No structured event stream for turns/tools yet.
 
 Minimal operational checks:
 
-1. `elok init-config`
-2. `elok run`
-3. `curl http://127.0.0.1:7777/healthz`
+1. `elok run`
+2. `curl http://127.0.0.1:7777/healthz`
+3. Open `http://127.0.0.1:7777/` and send a chat message.
 4. Connect WS client and call `system.ping` / `session.send`.
 
 ## 15. Build and Dependency Notes (Current Scaffold)

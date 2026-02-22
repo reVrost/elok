@@ -38,6 +38,7 @@ type Capabilities struct {
 }
 
 type CommandHandleParams struct {
+	TenantID  string `json:"tenant_id,omitempty"`
 	SessionID string `json:"session_id"`
 	Text      string `json:"text"`
 }
@@ -48,6 +49,7 @@ type CommandHandleResult struct {
 }
 
 type HookBeforeTurnParams struct {
+	TenantID  string `json:"tenant_id,omitempty"`
 	SessionID string `json:"session_id"`
 	UserText  string `json:"user_text"`
 }
@@ -58,6 +60,7 @@ type HookBeforeTurnResult struct {
 }
 
 type HookAfterTurnParams struct {
+	TenantID      string `json:"tenant_id,omitempty"`
 	SessionID     string `json:"session_id"`
 	UserText      string `json:"user_text"`
 	AssistantText string `json:"assistant_text"`

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"path"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -14,28 +17,47 @@ import (
 	"github.com/coder/websocket/wsjson"
 	"github.com/revrost/elok/pkg/agent"
 	"github.com/revrost/elok/pkg/channels"
+	"github.com/revrost/elok/pkg/tenantctx"
+	elokui "github.com/revrost/elok/ui"
 )
 
 type Server struct {
-	addr     string
-	log      *slog.Logger
-	agent    *agent.Service
-	channels *channels.Manager
-	http     *http.Server
-	seq      uint64
+	addr            string
+	log             *slog.Logger
+	agent           *agent.Service
+	channels        *channels.Manager
+	defaultTenantID string
+	http            *http.Server
+	uiFS            fs.FS
+	ui              http.Handler
+	seq             uint64
 }
 
-func NewServer(addr string, svc *agent.Service, channelManager *channels.Manager, log *slog.Logger) *Server {
+func NewServer(addr string, svc *agent.Service, channelManager *channels.Manager, defaultTenantID string, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
 	log = log.With("component", "gateway")
+
+	var uiFS fs.FS
+	var uiHandler http.Handler
+	distFS, err := elokui.DistFS()
+	if err != nil {
+		log.Warn("ui dist is unavailable; only API routes are served", "error", err)
+	} else {
+		uiFS = distFS
+		uiHandler = http.FileServer(http.FS(distFS))
+	}
+
 	mux := http.NewServeMux()
 	s := &Server{
-		addr:     addr,
-		log:      log,
-		agent:    svc,
-		channels: channelManager,
+		addr:            addr,
+		log:             log,
+		agent:           svc,
+		channels:        channelManager,
+		defaultTenantID: tenantctx.Normalize(defaultTenantID),
+		uiFS:            uiFS,
+		ui:              uiHandler,
 		http: &http.Server{
 			Addr:              addr,
 			Handler:           mux,
@@ -45,6 +67,7 @@ func NewServer(addr string, svc *agent.Service, channelManager *channels.Manager
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/status/channels", s.handleChannelStatus)
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/", s.handleUI)
 	return s
 }
 
@@ -83,6 +106,37 @@ func (s *Server) handleChannelStatus(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"channels": s.channelStatusSnapshot(),
 	})
+}
+
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	if s.ui == nil || s.uiFS == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	target := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+	if target == "." || target == "" {
+		target = "index.html"
+	} else {
+		if _, err := fs.Stat(s.uiFS, target); err != nil {
+			target = "index.html"
+		}
+	}
+
+	clone := cloneRequestWithPath(r, "/"+target)
+	s.ui.ServeHTTP(w, clone)
+}
+
+func cloneRequestWithPath(r *http.Request, targetPath string) *http.Request {
+	clone := r.Clone(r.Context())
+	urlCopy := *r.URL
+	urlCopy.Path = targetPath
+	clone.URL = &urlCopy
+	return clone
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +197,11 @@ func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logg
 		if err := decodeParams(req.Params, &in); err != nil {
 			return errorEnvelope(req.ID, "bad_params", err.Error())
 		}
-		res, err := s.agent.Send(ctx, in.SessionID, in.Text)
+		callCtx, err := s.scopedCallContext(ctx, in.TenantID)
+		if err != nil {
+			return errorEnvelope(req.ID, "tenant_unsupported", err.Error())
+		}
+		res, err := s.agent.Send(callCtx, in.SessionID, in.Text)
 		if err != nil {
 			if reqLog != nil {
 				reqLog.Warn("session.send failed", "session_id", in.SessionID, "error", err)
@@ -165,7 +223,11 @@ func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logg
 				return errorEnvelope(req.ID, "bad_params", err.Error())
 			}
 		}
-		sessions, err := s.agent.ListSessions(ctx, in.Limit)
+		callCtx, err := s.scopedCallContext(ctx, in.TenantID)
+		if err != nil {
+			return errorEnvelope(req.ID, "tenant_unsupported", err.Error())
+		}
+		sessions, err := s.agent.ListSessions(callCtx, in.Limit)
 		if err != nil {
 			return errorEnvelope(req.ID, "list_failed", err.Error())
 		}
@@ -178,7 +240,11 @@ func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logg
 		if in.SessionID == "" {
 			return errorEnvelope(req.ID, "bad_params", "session_id is required")
 		}
-		messages, err := s.agent.ListMessages(ctx, in.SessionID, in.Limit)
+		callCtx, err := s.scopedCallContext(ctx, in.TenantID)
+		if err != nil {
+			return errorEnvelope(req.ID, "tenant_unsupported", err.Error())
+		}
+		messages, err := s.agent.ListMessages(callCtx, in.SessionID, in.Limit)
 		if err != nil {
 			return errorEnvelope(req.ID, "messages_failed", err.Error())
 		}
@@ -227,6 +293,15 @@ func decodeParams(raw json.RawMessage, out any) error {
 		return fmt.Errorf("decode params: %w", err)
 	}
 	return nil
+}
+
+func (s *Server) scopedCallContext(ctx context.Context, requestedTenantID string) (context.Context, error) {
+	requested := tenantctx.Normalize(requestedTenantID)
+	if requested != s.defaultTenantID {
+		// TODO(multi-tenant): replace this with auth-scoped tenant resolution and per-tenant authorization.
+		return nil, fmt.Errorf("tenant_id %q is unavailable in single-tenant mode", requested)
+	}
+	return tenantctx.WithTenantID(ctx, s.defaultTenantID), nil
 }
 
 func resultEnvelope(id string, result any) Envelope {

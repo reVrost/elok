@@ -12,11 +12,12 @@ import (
 	"github.com/revrost/elok/pkg/llm"
 	"github.com/revrost/elok/pkg/plugins"
 	"github.com/revrost/elok/pkg/store"
+	"github.com/revrost/elok/pkg/tenantctx"
 	"github.com/revrost/elok/pkg/tools"
 )
 
 type Service struct {
-	store        *store.Store
+	store        store.ChatStore
 	llm          llm.Client
 	plugins      *plugins.Manager
 	tools        *tools.Registry
@@ -31,7 +32,7 @@ type SendResult struct {
 	HandledCommand bool   `json:"handled_command"`
 }
 
-func NewService(st *store.Store, llmClient llm.Client, pluginManager *plugins.Manager, toolRegistry *tools.Registry, log *slog.Logger) *Service {
+func NewService(st store.ChatStore, llmClient llm.Client, pluginManager *plugins.Manager, toolRegistry *tools.Registry, log *slog.Logger) *Service {
 	if toolRegistry == nil {
 		toolRegistry = tools.NewRegistry()
 	}
@@ -71,9 +72,10 @@ func (s *Service) Send(ctx context.Context, sessionID, text string) (res SendRes
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = newSessionID()
 	}
+	tenantID := tenantctx.TenantID(ctx)
 
 	userText := strings.TrimSpace(text)
-	if _, err := s.store.AppendMessage(ctx, sessionID, "user", userText); err != nil {
+	if _, err := s.store.AppendMessage(ctx, tenantID, sessionID, "user", userText); err != nil {
 		return SendResult{}, fmt.Errorf("store user message: %w", err)
 	}
 
@@ -83,7 +85,7 @@ func (s *Service) Send(ctx context.Context, sessionID, text string) (res SendRes
 			return SendResult{}, err
 		}
 		if handled {
-			if _, err := s.store.AppendMessage(ctx, sessionID, "assistant", response); err != nil {
+			if _, err := s.store.AppendMessage(ctx, tenantID, sessionID, "assistant", response); err != nil {
 				return SendResult{}, fmt.Errorf("store command response: %w", err)
 			}
 			return SendResult{
@@ -110,7 +112,7 @@ func (s *Service) Send(ctx context.Context, sessionID, text string) (res SendRes
 		}
 	}
 
-	messages, err := s.store.ListMessages(ctx, sessionID, 40)
+	messages, err := s.store.ListMessages(ctx, tenantID, sessionID, 40)
 	if err != nil {
 		return SendResult{}, fmt.Errorf("load session messages: %w", err)
 	}
@@ -137,12 +139,13 @@ func (s *Service) Send(ctx context.Context, sessionID, text string) (res SendRes
 	if assistantText == "" {
 		assistantText = "(empty assistant response)"
 	}
-	if _, err := s.store.AppendMessage(ctx, sessionID, "assistant", assistantText); err != nil {
+	if _, err := s.store.AppendMessage(ctx, tenantID, sessionID, "assistant", assistantText); err != nil {
 		return SendResult{}, fmt.Errorf("store assistant message: %w", err)
 	}
 
 	if s.plugins != nil {
 		s.plugins.AfterTurn(ctx, plugins.AfterTurnParams{
+			TenantID:      tenantID,
 			SessionID:     sessionID,
 			UserText:      userText,
 			AssistantText: assistantText,
@@ -158,11 +161,11 @@ func (s *Service) Send(ctx context.Context, sessionID, text string) (res SendRes
 }
 
 func (s *Service) ListSessions(ctx context.Context, limit int) ([]store.Session, error) {
-	return s.store.ListSessions(ctx, limit)
+	return s.store.ListSessions(ctx, tenantctx.TenantID(ctx), limit)
 }
 
 func (s *Service) ListMessages(ctx context.Context, sessionID string, limit int) ([]store.Message, error) {
-	return s.store.ListMessages(ctx, sessionID, limit)
+	return s.store.ListMessages(ctx, tenantctx.TenantID(ctx), sessionID, limit)
 }
 
 func newSessionID() string {

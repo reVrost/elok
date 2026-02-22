@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Build/runtime artifacts
+tmp/
+*.log
+*.out
+elok
+
+# UI local artifacts
+ui/node_modules/
+ui/.svelte-kit/
+ui/.vite/
+ui/build/
+ui/coverage/
+ui/playwright-report/
+ui/test-results/
+ui/dist/*
+!ui/dist/.keep

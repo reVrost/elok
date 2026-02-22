@@ -15,6 +15,7 @@ import (
 
 	"github.com/revrost/elok/pkg/config"
 	"github.com/revrost/elok/pkg/plugins/protocol"
+	"github.com/revrost/elok/pkg/tenantctx"
 )
 
 type Manager struct {
@@ -36,6 +37,7 @@ type runtimePlugin struct {
 }
 
 type AfterTurnParams struct {
+	TenantID      string
 	SessionID     string
 	UserText      string
 	AssistantText string
@@ -81,12 +83,14 @@ func (m *Manager) Stop(ctx context.Context) error {
 }
 
 func (m *Manager) HandleCommand(ctx context.Context, sessionID, text string) (bool, string, error) {
+	tenantID := tenantctx.TenantID(ctx)
 	for _, plugin := range m.plugins {
 		if !plugin.manifest.Capabilities.Commands {
 			continue
 		}
 		var out protocol.CommandHandleResult
 		err := plugin.call(ctx, "command.handle", protocol.CommandHandleParams{
+			TenantID:  tenantID,
 			SessionID: sessionID,
 			Text:      text,
 		}, &out)
@@ -101,6 +105,7 @@ func (m *Manager) HandleCommand(ctx context.Context, sessionID, text string) (bo
 }
 
 func (m *Manager) BeforeTurn(ctx context.Context, sessionID, userText string) (string, string, error) {
+	tenantID := tenantctx.TenantID(ctx)
 	currentText := userText
 	systemAdditions := make([]string, 0)
 	for _, plugin := range m.plugins {
@@ -109,6 +114,7 @@ func (m *Manager) BeforeTurn(ctx context.Context, sessionID, userText string) (s
 		}
 		var out protocol.HookBeforeTurnResult
 		err := plugin.call(ctx, "hook.before_turn", protocol.HookBeforeTurnParams{
+			TenantID:  tenantID,
 			SessionID: sessionID,
 			UserText:  currentText,
 		}, &out)
@@ -131,6 +137,7 @@ func (m *Manager) AfterTurn(ctx context.Context, in AfterTurnParams) {
 			continue
 		}
 		err := plugin.call(ctx, "hook.after_turn", protocol.HookAfterTurnParams{
+			TenantID:      tenantctx.Normalize(in.TenantID),
 			SessionID:     in.SessionID,
 			UserText:      in.UserText,
 			AssistantText: in.AssistantText,

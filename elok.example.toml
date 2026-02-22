@@ -26,6 +26,10 @@ enable_ws = true
 enabled = false
 store_path = "~/.elok/whatsapp.db"
 
+[tenancy]
+mode = "single" # single|multi (multi is reserved/TODO)
+default_tenant_id = "default"
+
 [plugins]
 enabled = true
 

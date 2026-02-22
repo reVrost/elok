@@ -14,6 +14,9 @@ import (
 const (
 	defaultDirName        = ".elok"
 	defaultConfigFileName = "config.toml"
+
+	TenancyModeSingle = "single"
+	TenancyModeMulti  = "multi"
 )
 
 type Config struct {
@@ -24,6 +27,7 @@ type Config struct {
 	Plugins       PluginConfig        `toml:"plugins"`
 	Gateway       GatewayConfig       `toml:"gateway"`
 	WhatsApp      WhatsAppConfig      `toml:"whatsapp"`
+	Tenancy       TenancyConfig       `toml:"tenancy"`
 	Observability ObservabilityConfig `toml:"observability"`
 }
 
@@ -34,6 +38,11 @@ type GatewayConfig struct {
 type WhatsAppConfig struct {
 	Enabled   bool   `toml:"enabled"`
 	StorePath string `toml:"store_path"`
+}
+
+type TenancyConfig struct {
+	Mode            string `toml:"mode"`
+	DefaultTenantID string `toml:"default_tenant_id"`
 }
 
 type LLMConfig struct {
@@ -129,6 +138,10 @@ func Default() Config {
 			Enabled:   false,
 			StorePath: filepath.Join(DefaultDir(), "whatsapp.db"),
 		},
+		Tenancy: TenancyConfig{
+			Mode:            TenancyModeSingle,
+			DefaultTenantID: "default",
+		},
 		Observability: ObservabilityConfig{
 			VictoriaLogsURL:       "",
 			VictoriaLogsQueueSize: 1024,
@@ -189,6 +202,19 @@ func Load(path string) (Config, error) {
 		cfg.WhatsApp.StorePath = Default().WhatsApp.StorePath
 	}
 	cfg.WhatsApp.StorePath = ExpandPath(cfg.WhatsApp.StorePath)
+	if strings.TrimSpace(cfg.Tenancy.Mode) == "" {
+		cfg.Tenancy.Mode = Default().Tenancy.Mode
+	}
+	cfg.Tenancy.Mode = strings.ToLower(strings.TrimSpace(cfg.Tenancy.Mode))
+	switch cfg.Tenancy.Mode {
+	case TenancyModeSingle, TenancyModeMulti:
+	default:
+		return Config{}, fmt.Errorf("unsupported tenancy.mode: %s", cfg.Tenancy.Mode)
+	}
+	if strings.TrimSpace(cfg.Tenancy.DefaultTenantID) == "" {
+		cfg.Tenancy.DefaultTenantID = Default().Tenancy.DefaultTenantID
+	}
+	cfg.Tenancy.DefaultTenantID = strings.TrimSpace(cfg.Tenancy.DefaultTenantID)
 
 	if cfg.Observability.VictoriaLogsURL == "" {
 		cfg.Observability.VictoriaLogsURL = Default().Observability.VictoriaLogsURL

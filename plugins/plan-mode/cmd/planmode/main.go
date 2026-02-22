@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/revrost/elok/pkg/plugins/protocol"
+	"github.com/revrost/elok/pkg/tenantctx"
 	"modernc.org/quickjs"
 )
 
@@ -76,7 +77,7 @@ func handleCall(st *sessionState, rt *scriptRuntime, env protocol.Envelope) {
 			sendError(env.ID, "bad_params", err.Error())
 			return
 		}
-		out, err := handleScriptCall[protocol.CommandHandleResult](st, rt, env.Method, in.SessionID, in)
+		out, err := handleScriptCall[protocol.CommandHandleResult](st, rt, env.Method, scopedSessionID(in.TenantID, in.SessionID), in)
 		if err != nil {
 			sendError(env.ID, "runtime_error", err.Error())
 			return
@@ -88,7 +89,7 @@ func handleCall(st *sessionState, rt *scriptRuntime, env protocol.Envelope) {
 			sendError(env.ID, "bad_params", err.Error())
 			return
 		}
-		out, err := handleScriptCall[protocol.HookBeforeTurnResult](st, rt, env.Method, in.SessionID, in)
+		out, err := handleScriptCall[protocol.HookBeforeTurnResult](st, rt, env.Method, scopedSessionID(in.TenantID, in.SessionID), in)
 		if err != nil {
 			sendError(env.ID, "runtime_error", err.Error())
 			return
@@ -100,7 +101,7 @@ func handleCall(st *sessionState, rt *scriptRuntime, env protocol.Envelope) {
 			sendError(env.ID, "bad_params", err.Error())
 			return
 		}
-		out, err := handleScriptCall[map[string]any](st, rt, env.Method, in.SessionID, in)
+		out, err := handleScriptCall[map[string]any](st, rt, env.Method, scopedSessionID(in.TenantID, in.SessionID), in)
 		if err != nil {
 			sendError(env.ID, "runtime_error", err.Error())
 			return
@@ -127,6 +128,14 @@ func handleScriptCall[T any](st *sessionState, rt *scriptRuntime, method, sessio
 		return zero, fmt.Errorf("decode %s result: %w", method, err)
 	}
 	return out, nil
+}
+
+func scopedSessionID(tenantID, sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	return tenantctx.Normalize(tenantID) + ":" + sessionID
 }
 
 type sessionState struct {

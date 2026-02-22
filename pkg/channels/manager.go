@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/revrost/elok/pkg/config"
+	"github.com/revrost/elok/pkg/tenantctx"
 )
 
 const inboundResponseTimeout = 90 * time.Second
@@ -37,8 +38,9 @@ type registration struct {
 }
 
 type Manager struct {
-	log     *slog.Logger
-	respond Responder
+	log             *slog.Logger
+	respond         Responder
+	defaultTenantID string
 
 	mu            sync.Mutex
 	registrations []registration
@@ -49,22 +51,24 @@ type Manager struct {
 
 type inboundText struct {
 	ChannelID string
+	TenantID  string
 	ChatID    string
 	SessionID string
 	Text      string
 	Reply     func(ctx context.Context, text string) error
 }
 
-func NewManager(log *slog.Logger, respond Responder) *Manager {
+func NewManager(log *slog.Logger, defaultTenantID string, respond Responder) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
 	log = log.With("component", "channels")
 	m := &Manager{
-		log:      log,
-		respond:  respond,
-		closers:  make(map[string]func() error),
-		statuses: make(map[string]Status),
+		log:             log,
+		respond:         respond,
+		defaultTenantID: tenantctx.Normalize(defaultTenantID),
+		closers:         make(map[string]func() error),
+		statuses:        make(map[string]Status),
 	}
 	m.registerWhatsApp()
 	return m
@@ -268,6 +272,7 @@ func (m *Manager) onInboundText(msg inboundText) {
 
 	msgCtx, cancel := context.WithTimeout(context.Background(), inboundResponseTimeout)
 	defer cancel()
+	msgCtx = tenantctx.WithTenantID(msgCtx, m.scopedTenantID(msg.TenantID))
 
 	reply, err := m.respond(msgCtx, msg.SessionID, text)
 	if err != nil {
@@ -281,4 +286,13 @@ func (m *Manager) onInboundText(msg inboundText) {
 	if err := msg.Reply(msgCtx, reply); err != nil {
 		m.log.Warn("failed sending channel response", "channel", msg.ChannelID, "chat", msg.ChatID, "error", err)
 	}
+}
+
+func (m *Manager) scopedTenantID(requestedTenantID string) string {
+	requested := tenantctx.Normalize(requestedTenantID)
+	if requested != m.defaultTenantID {
+		// TODO(multi-tenant): route channel events to per-tenant runtime once tenancy.mode=multi is implemented.
+		m.log.Warn("tenant override ignored in single-tenant mode", "requested_tenant_id", requested, "active_tenant_id", m.defaultTenantID)
+	}
+	return m.defaultTenantID
 }
