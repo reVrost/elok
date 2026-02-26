@@ -14,8 +14,11 @@ type Message struct {
 }
 
 type CompletionRequest struct {
-	SystemPrompt string    `json:"system_prompt"`
-	Messages     []Message `json:"messages"`
+	SystemPrompt     string    `json:"system_prompt"`
+	Messages         []Message `json:"messages"`
+	Provider         string    `json:"provider,omitempty"`
+	Model            string    `json:"model,omitempty"`
+	OpenRouterAPIKey string    `json:"openrouter_api_key,omitempty"`
 }
 
 type CompletionResponse struct {
@@ -44,14 +47,7 @@ type Client interface {
 }
 
 func New(cfg config.LLMConfig) Client {
-	switch strings.ToLower(strings.TrimSpace(cfg.Provider)) {
-	case "openrouter":
-		return NewOpenRouter(cfg)
-	case "codex":
-		return NewCodex(cfg)
-	default:
-		return NewMock(cfg)
-	}
+	return NewRouting(cfg)
 }
 
 func BuildTranscript(messages []Message) string {

@@ -29,12 +29,18 @@ type RegisterResult struct {
 	ID           string       `json:"id"`
 	Version      string       `json:"version"`
 	Capabilities Capabilities `json:"capabilities"`
+	Commands     []CommandDef `json:"commands,omitempty"`
 }
 
 type Capabilities struct {
 	Commands bool `json:"commands"`
 	Hooks    bool `json:"hooks"`
 	Tools    bool `json:"tools"`
+}
+
+type CommandDef struct {
+	Command     string `json:"command"`
+	Description string `json:"description,omitempty"`
 }
 
 type CommandHandleParams struct {

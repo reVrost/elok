@@ -66,10 +66,19 @@ func (c *OpenRouterClient) Complete(ctx context.Context, req CompletionRequest) 
 }
 
 func (c *OpenRouterClient) Stream(ctx context.Context, req CompletionRequest) (*Stream, error) {
-	if strings.TrimSpace(c.apiKey) == "" {
+	apiKey := strings.TrimSpace(req.OpenRouterAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(c.apiKey)
+	}
+	if apiKey == "" {
 		return nil, fmt.Errorf("openrouter api key is empty")
 	}
-	if strings.TrimSpace(c.model) == "" {
+
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = strings.TrimSpace(c.model)
+	}
+	if model == "" {
 		return nil, fmt.Errorf("openrouter model is empty")
 	}
 
@@ -82,7 +91,7 @@ func (c *OpenRouterClient) Stream(ctx context.Context, req CompletionRequest) (*
 	}
 
 	payload, err := json.Marshal(openRouterRequest{
-		Model:    c.model,
+		Model:    model,
 		Messages: msgs,
 		Stream:   true,
 	})
@@ -99,7 +108,7 @@ func (c *OpenRouterClient) Stream(ctx context.Context, req CompletionRequest) (*
 	if err != nil {
 		return nil, fmt.Errorf("create openrouter request: %w", err)
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 	httpReq.Header.Set("HTTP-Referer", "https://github.com/revrost/elok")

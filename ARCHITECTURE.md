@@ -40,7 +40,7 @@ This is a pragmatic "agent host scaffold" rather than a full autonomous planner/
 
 ## 3. Repository Map
 
-- `cmd/elok/main.go`: CLI entrypoint (`run`, `migrate`, `version`).
+- `cmd/elok/main.go`: CLI entrypoint (`run`, `version`).
 - `pkg/config/config.go`: config schema, defaults, load/save, path expansion.
 - `pkg/agent/service.go`: core turn processing and session APIs.
 - `pkg/gateway/server.go`: WS/HTTP transport, method dispatch.
@@ -62,19 +62,18 @@ This is a pragmatic "agent host scaffold" rather than a full autonomous planner/
 2. Installs default text logger (`slog`).
 3. Opens SQLite store and applies embedded migrations.
 4. Starts plugin manager, which starts each configured plugin process and calls `register`.
-5. Constructs `agent.Service` with store + llm client + plugin manager + tool registry.
-6. Starts gateway HTTP server (`/healthz`, `/ws`, and embedded UI on `/`).
+5. Constructs `agent.Runtime` with store + llm client + plugin manager + tool registry.
+6. Starts gateway HTTP server (`/healthz`, `/ws`, and embedded UI on `/app`).
 7. On signal (`SIGINT`/`SIGTERM`), shuts down gateway and plugin processes.
 
 Other commands:
 
-- `elok migrate`: load config and apply migrations.
 - `elok run`: auto-writes a default config TOML when the configured path does not exist.
 - `elok version`: print build version string.
 
 ## 5. Agentic Loop (Current Implementation)
 
-Primary entrypoint: `agent.Service.Send(ctx, sessionID, text)`.
+Primary entrypoint: `agent.Runtime.Send(ctx, sessionID, text)`.
 
 ### Turn algorithm
 
@@ -101,7 +100,7 @@ Primary entrypoint: `agent.Service.Send(ctx, sessionID, text)`.
 - Durability-first: user input is persisted before any plugin/model logic.
 - Command path short-circuits model invocation.
 - Hook mutations are ephemeral unless the plugin separately persists state.
-- No tool-call roundtrip loop yet (no parse/execute/retry cycle in `agent.Service`).
+- No tool-call roundtrip loop yet (no parse/execute/retry cycle in `agent.Runtime`).
 
 ### Effective loop maturity
 
@@ -168,7 +167,7 @@ This plugin is effectively prompt shaping + command UX, not a planner/executor e
 
 ## 7. Gateway and Client Protocol
 
-Transport: WebSocket endpoint `/ws` plus HTTP `/healthz`, `/status/channels`, and embedded static UI on `/`.
+Transport: WebSocket endpoint `/ws` plus HTTP `/healthz`, `/status/channels`, and embedded static UI on `/app`.
 
 ### Envelope contract
 
@@ -189,8 +188,10 @@ Supported methods:
 
 ### UI behavior
 
-- Root route (`/`) serves embedded SvelteKit static assets from `ui/dist`.
-- Unknown GET/HEAD paths fall back to `index.html` for SPA client-side routing.
+- Root route (`/`) redirects to `/app`.
+- `/app` serves embedded SvelteKit static assets from `ui/dist`.
+- Unknown route-like GET/HEAD paths under `/app` fall back to `index.html` for SPA client-side routing.
+- Missing asset-like paths under `/app` (for example `.js`, `.css`, `.png`) return `404`.
 - If embedded assets are unavailable at build time, gateway logs a warning and only API routes are served.
 
 ### Error behavior
@@ -246,7 +247,7 @@ Provider adapters expose a streaming interface; the current agent loop still use
 
 Current gap:
 
-- Registry is created and injected into `agent.Service`, but never used by turn loop or plugins.
+- Registry is created and injected into `agent.Runtime`, but never used by turn loop or plugins.
 - Plugin protocol advertises `tools` capability but host never routes tool invocations.
 
 So tool support is scaffolded API surface, not active behavior.
@@ -263,7 +264,7 @@ So tool support is scaffolded API surface, not active behavior.
 Current runtime status:
 
 - Main program (`cmd/elok`) instantiates this adapter when `whatsapp.enabled=true`.
-- Incoming WhatsApp text is bridged into `agent.Service.Send` with session IDs keyed as `wa:<chatID>`.
+- Incoming WhatsApp text is bridged into `agent.Runtime.Send` with session IDs keyed as `wa:<chatID>`.
 - Assistant text responses are sent back to WhatsApp via adapter `SendText`.
 
 Interpretation: WhatsApp is a first-class ingress/egress channel in the host runtime, gated by config.
@@ -322,7 +323,7 @@ Minimal operational checks:
 
 1. `elok run`
 2. `curl http://127.0.0.1:7777/healthz`
-3. Open `http://127.0.0.1:7777/` and send a chat message.
+3. Open `http://127.0.0.1:7777/app` and send a chat message.
 4. Connect WS client and call `system.ping` / `session.send`.
 
 ## 15. Build and Dependency Notes (Current Scaffold)

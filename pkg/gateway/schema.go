@@ -29,12 +29,16 @@ type SessionSendParams struct {
 	SessionID string `json:"session_id"`
 	TenantID  string `json:"tenant_id,omitempty"`
 	Text      string `json:"text"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
 }
 
 type SessionSendResult struct {
 	SessionID      string `json:"session_id"`
 	AssistantText  string `json:"assistant_text"`
 	HandledCommand bool   `json:"handled_command"`
+	Provider       string `json:"provider,omitempty"`
+	Model          string `json:"model,omitempty"`
 }
 
 type SessionListParams struct {
@@ -50,6 +54,34 @@ type SessionMessagesParams struct {
 
 type SystemChannelsResult struct {
 	Channels []ChannelStatus `json:"channels"`
+}
+
+type SystemConfigParams struct {
+	TenantID string `json:"tenant_id,omitempty"`
+}
+
+type SystemConfigSetParams struct {
+	TenantID         string  `json:"tenant_id,omitempty"`
+	Provider         *string `json:"provider,omitempty"`
+	Model            *string `json:"model,omitempty"`
+	OpenRouterAPIKey *string `json:"openrouter_api_key,omitempty"`
+}
+
+type SystemConfigResult struct {
+	Provider               string `json:"provider,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	HasOpenRouterAPIKey    bool   `json:"has_openrouter_api_key"`
+	OpenRouterAPIKeyMasked string `json:"openrouter_api_key_masked,omitempty"`
+}
+
+type SystemCommandsResult struct {
+	Commands []CommandHint `json:"commands"`
+}
+
+type CommandHint struct {
+	Command     string `json:"command"`
+	Description string `json:"description,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 type ChannelStatus struct {

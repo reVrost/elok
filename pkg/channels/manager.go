@@ -58,11 +58,8 @@ type inboundText struct {
 	Reply     func(ctx context.Context, text string) error
 }
 
-func NewManager(log *slog.Logger, defaultTenantID string, respond Responder) *Manager {
-	if log == nil {
-		log = slog.Default()
-	}
-	log = log.With("component", "channels")
+func NewManager(defaultTenantID string, respond Responder) *Manager {
+	log := slog.Default().With("component", "channels")
 	m := &Manager{
 		log:             log,
 		respond:         respond,

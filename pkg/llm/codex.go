@@ -182,11 +182,15 @@ func (c *CodexClient) buildResponsesRequest(req CompletionRequest) codexResponse
 		if role == "" || text == "" {
 			continue
 		}
+		contentType := "input_text"
+		if strings.EqualFold(role, "assistant") {
+			contentType = "output_text"
+		}
 		input = append(input, codexMessageInput{
 			Type: "message",
 			Role: role,
 			Content: []codexTextInput{
-				{Type: "input_text", Text: text},
+				{Type: contentType, Text: text},
 			},
 		})
 	}

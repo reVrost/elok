@@ -109,6 +109,12 @@ func handleCall(st *sessionState, rt *scriptRuntime, rs *runtimeState, env proto
 				Hooks:    false,
 				Tools:    false,
 			},
+			Commands: []protocol.CommandDef{
+				{
+					Command:     "/cstunnel",
+					Description: "Tunnel controls: pair, status, stop, help.",
+				},
+			},
 		})
 	case "command.handle":
 		var in protocol.CommandHandleParams

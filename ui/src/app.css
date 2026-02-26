@@ -1,53 +1,42 @@
-:root {
-  --bg: #f5f1e7;
-  --paper: #fffdf9;
-  --ink: #1f2a2d;
-  --muted: #617073;
-  --line: #d8d2c4;
-  --brand: #0f766e;
-  --brand-ink: #dffaf7;
-  --accent: #c2410c;
-  --user-bubble: #17383a;
-  --user-ink: #ecfffd;
-  --assistant-bubble: #fffcf6;
-  --assistant-ink: #253135;
-  --shadow: 0 16px 48px rgba(24, 37, 42, 0.08);
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-* {
-  box-sizing: border-box;
-}
+@layer base {
+	:root {
+		--radius: 0.75rem;
+	}
 
-html,
-body {
-  margin: 0;
-  padding: 0;
-  min-height: 100%;
-}
+	* {
+		box-sizing: border-box;
+	}
 
-body {
-  font-family: "Manrope", "Avenir Next", "Segoe UI", sans-serif;
-  color: var(--ink);
-  background:
-    radial-gradient(1200px 480px at 0% 0%, rgba(15, 118, 110, 0.13), transparent 60%),
-    radial-gradient(900px 380px at 100% 100%, rgba(194, 65, 12, 0.12), transparent 60%),
-    var(--bg);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+	html {
+		height: 100%;
+		height: -webkit-fill-available;
+		font-size: 13px;
+	}
 
-button,
-input,
-textarea {
-  font: inherit;
-}
+	body {
+		@apply bg-[#0a0a0a] text-zinc-100 antialiased;
+		font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+		margin: 0;
+		min-height: 100%;
+		min-height: -webkit-fill-available;
+		overflow: hidden;
+		overscroll-behavior: none;
+	}
 
-a,
-button {
-  -webkit-tap-highlight-color: transparent;
-  touch-action: manipulation;
-}
+	button,
+	input,
+	textarea {
+		font: inherit;
+	}
 
-.mono {
-  font-family: "IBM Plex Mono", "SFMono-Regular", "Consolas", monospace;
+	button,
+	a,
+	[role='button'] {
+		touch-action: manipulation;
+		-webkit-tap-highlight-color: transparent;
+	}
 }

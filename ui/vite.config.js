@@ -15,14 +15,14 @@ export default defineConfig({
 				type: 'module'
 			},
 			manifest: {
-				id: '/',
+				id: '/app',
 				name: 'Elok',
 				short_name: 'Elok',
 				description: 'Local-first agent host with channels and plugins.',
-				start_url: '/',
-				scope: '/',
-				theme_color: '#0f766e',
-				background_color: '#f5f1e7',
+				start_url: '/app',
+				scope: '/app/',
+				theme_color: '#161b2b',
+				background_color: '#111626',
 				display: 'standalone',
 				icons: [
 					{

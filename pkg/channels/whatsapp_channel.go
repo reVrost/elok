@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/revrost/elok/pkg/channels/whatsapp"
 	"github.com/revrost/elok/pkg/config"
 )
 
@@ -29,10 +28,10 @@ func (m *Manager) startWhatsApp(ctx context.Context, cfg config.WhatsAppConfig) 
 		st.LastError = ""
 	})
 
-	var adapter *whatsapp.Adapter
+	var adapter *whatsappAdapter
 	var err error
 
-	adapter, err = whatsapp.NewAdapter(ctx, whatsapp.Options{
+	adapter, err = newWhatsAppAdapter(ctx, whatsappOptions{
 		StorePath: cfg.StorePath,
 		Logger:    m.log,
 		OnConnected: func() {
@@ -44,7 +43,7 @@ func (m *Manager) startWhatsApp(ctx context.Context, cfg config.WhatsAppConfig) 
 		OnLoggedOut: func(reason string) {
 			m.markDisconnected(whatsappChannelID, fmt.Sprintf("logged out: %s", reason))
 		},
-		OnText: func(_ context.Context, msg whatsapp.InboundText) {
+		OnText: func(_ context.Context, msg whatsappInboundText) {
 			m.markSeen(whatsappChannelID, time.Now().UTC())
 			m.onInboundText(inboundText{
 				ChannelID: whatsappChannelID,

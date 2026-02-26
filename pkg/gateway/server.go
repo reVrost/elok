@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"path"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,7 +26,7 @@ import (
 type Server struct {
 	addr            string
 	log             *slog.Logger
-	agent           *agent.Service
+	agent           *agent.Runtime
 	channels        *channels.Manager
 	defaultTenantID string
 	http            *http.Server
@@ -33,11 +35,10 @@ type Server struct {
 	seq             uint64
 }
 
-func NewServer(addr string, svc *agent.Service, channelManager *channels.Manager, defaultTenantID string, log *slog.Logger) *Server {
-	if log == nil {
-		log = slog.Default()
-	}
-	log = log.With("component", "gateway")
+const uiBasePath = "/app"
+
+func NewServer(addr string, svc *agent.Runtime, channelManager *channels.Manager, defaultTenantID string) *Server {
+	log := slog.Default().With("component", "gateway")
 
 	var uiFS fs.FS
 	var uiHandler http.Handler
@@ -67,14 +68,17 @@ func NewServer(addr string, svc *agent.Service, channelManager *channels.Manager
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/status/channels", s.handleChannelStatus)
 	mux.HandleFunc("/ws", s.handleWS)
-	mux.HandleFunc("/", s.handleUI)
+	mux.HandleFunc(uiBasePath, s.handleUI)
+	mux.HandleFunc(uiBasePath+"/", s.handleUI)
+	mux.HandleFunc("/", s.handleRoot)
 	return s
 }
 
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
-		s.log.Info("gateway listening", "addr", s.addr)
+		uiURL, wsURL, healthzURL := gatewayURLs(s.addr)
+		s.log.Info("gateway listening", "addr", s.addr, "ui_url", uiURL, "ws_url", wsURL, "healthz_url", healthzURL)
 		err := s.http.ListenAndServe()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -108,6 +112,18 @@ func (s *Server) handleChannelStatus(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		http.Redirect(w, r, uiBasePath, http.StatusTemporaryRedirect)
+		return
+	}
+	http.NotFound(w, r)
+}
+
 func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 	if s.ui == nil || s.uiFS == nil {
 		http.NotFound(w, r)
@@ -118,13 +134,34 @@ func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	target := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
-	if target == "." || target == "" {
-		target = "index.html"
-	} else {
-		if _, err := fs.Stat(s.uiFS, target); err != nil {
-			target = "index.html"
+	cleanPath := path.Clean(r.URL.Path)
+	if cleanPath == "." {
+		cleanPath = "/"
+	}
+	if cleanPath == uiBasePath {
+		s.serveIndexHTML(w, r)
+		return
+	}
+
+	if !strings.HasPrefix(cleanPath, uiBasePath+"/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	target := strings.TrimPrefix(cleanPath, uiBasePath+"/")
+	if target == "" || target == "." {
+		s.serveIndexHTML(w, r)
+		return
+	}
+
+	if _, err := fs.Stat(s.uiFS, target); err != nil {
+		// Missing asset-like paths should return 404, not SPA fallback HTML.
+		if strings.Contains(path.Base(target), ".") {
+			http.NotFound(w, r)
+			return
 		}
+		s.serveIndexHTML(w, r)
+		return
 	}
 
 	clone := cloneRequestWithPath(r, "/"+target)
@@ -139,6 +176,57 @@ func cloneRequestWithPath(r *http.Request, targetPath string) *http.Request {
 	return clone
 }
 
+func (s *Server) serveIndexHTML(w http.ResponseWriter, r *http.Request) {
+	index, err := fs.ReadFile(s.uiFS, "index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(index)
+}
+
+func gatewayURLs(addr string) (uiURL, wsURL, healthzURL string) {
+	host, port := parseListenAddr(addr)
+	hostPort := host
+	if port != "" {
+		hostPort = net.JoinHostPort(host, port)
+	}
+	uiURL = "http://" + hostPort + uiBasePath
+	wsURL = "ws://" + hostPort + "/ws"
+	healthzURL = "http://" + hostPort + "/healthz"
+	return uiURL, wsURL, healthzURL
+}
+
+func parseListenAddr(addr string) (host, port string) {
+	trimmed := strings.TrimSpace(addr)
+	host, port, err := net.SplitHostPort(trimmed)
+	if err == nil {
+		return normalizeDisplayHost(host), port
+	}
+
+	if strings.HasPrefix(trimmed, ":") {
+		return "127.0.0.1", strings.TrimPrefix(trimmed, ":")
+	}
+
+	if strings.Count(trimmed, ":") == 0 {
+		return normalizeDisplayHost(trimmed), ""
+	}
+
+	return "127.0.0.1", ""
+}
+
+func normalizeDisplayHost(host string) string {
+	h := strings.TrimSpace(host)
+	switch h {
+	case "", "0.0.0.0", "::", "[::]":
+		return "127.0.0.1"
+	default:
+		return h
+	}
+}
+
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
@@ -149,7 +237,61 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 
-	ctx := r.Context()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	outbound := make(chan Envelope, 128)
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case env, ok := <-outbound:
+				if !ok {
+					return
+				}
+				if err := wsjson.Write(ctx, conn, env); err != nil {
+					s.log.Debug("ws write failed", "error", err)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+
+	var producers sync.WaitGroup
+	if s.agent != nil {
+		events, unsubscribe := s.agent.SubscribeEvents(ctx, 128)
+		producers.Add(1)
+		go func() {
+			defer producers.Done()
+			defer unsubscribe()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case event, ok := <-events:
+					if !ok {
+						return
+					}
+					select {
+					case outbound <- eventEnvelope(event):
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}()
+	}
+	defer func() {
+		cancel()
+		producers.Wait()
+		close(outbound)
+		<-writerDone
+	}()
+
 	for {
 		var req Envelope
 		if err := wsjson.Read(ctx, conn, &req); err != nil {
@@ -167,22 +309,28 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			req.ID = requestID
 		}
 		reqLog := s.log.With("request_id", requestID, "method", req.Method)
-		started := time.Now()
-		resp := s.handleCall(ctx, req, reqLog)
-		latency := time.Since(started).Milliseconds()
-		if resp.Type == EnvelopeTypeError {
-			code := ""
-			if resp.Error != nil {
-				code = resp.Error.Code
+		producers.Add(1)
+		go func(req Envelope, reqLog *slog.Logger) {
+			defer producers.Done()
+
+			started := time.Now()
+			resp := s.handleCall(ctx, req, reqLog)
+			latency := time.Since(started).Milliseconds()
+			if resp.Type == EnvelopeTypeError {
+				code := ""
+				if resp.Error != nil {
+					code = resp.Error.Code
+				}
+				reqLog.Warn("gateway call failed", "code", code, "latency_ms", latency)
+			} else {
+				reqLog.Debug("gateway call completed", "latency_ms", latency)
 			}
-			reqLog.Warn("gateway call failed", "code", code, "latency_ms", latency)
-		} else {
-			reqLog.Debug("gateway call completed", "latency_ms", latency)
-		}
-		if err := wsjson.Write(ctx, conn, resp); err != nil {
-			s.log.Debug("ws write failed", "error", err)
-			return
-		}
+
+			select {
+			case outbound <- resp:
+			case <-ctx.Done():
+			}
+		}(req, reqLog)
 	}
 }
 
@@ -192,6 +340,61 @@ func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logg
 		return resultEnvelope(req.ID, map[string]any{"ok": true, "ts": time.Now().UTC().Format(time.RFC3339)})
 	case "system.channels":
 		return resultEnvelope(req.ID, map[string]any{"channels": s.channelStatusSnapshot()})
+	case "system.commands":
+		raw := s.agent.ListCommandHints()
+		commands := make([]CommandHint, 0, len(raw))
+		for _, item := range raw {
+			commands = append(commands, CommandHint{
+				Command:     item.Command,
+				Description: item.Description,
+				Source:      item.PluginID,
+			})
+		}
+		return resultEnvelope(req.ID, SystemCommandsResult{Commands: commands})
+	case "system.config.get":
+		var in SystemConfigParams
+		if len(req.Params) > 0 {
+			if err := decodeParams(req.Params, &in); err != nil {
+				return errorEnvelope(req.ID, "bad_params", err.Error())
+			}
+		}
+		callCtx, err := s.scopedCallContext(ctx, in.TenantID)
+		if err != nil {
+			return errorEnvelope(req.ID, "tenant_unsupported", err.Error())
+		}
+		cfg, err := s.agent.GetRuntimeLLMConfig(callCtx)
+		if err != nil {
+			return errorEnvelope(req.ID, "config_failed", err.Error())
+		}
+		return resultEnvelope(req.ID, SystemConfigResult{
+			Provider:               cfg.Provider,
+			Model:                  cfg.Model,
+			HasOpenRouterAPIKey:    cfg.HasOpenRouterAPIKey,
+			OpenRouterAPIKeyMasked: cfg.OpenRouterAPIKeyMasked,
+		})
+	case "system.config.set":
+		var in SystemConfigSetParams
+		if err := decodeParams(req.Params, &in); err != nil {
+			return errorEnvelope(req.ID, "bad_params", err.Error())
+		}
+		callCtx, err := s.scopedCallContext(ctx, in.TenantID)
+		if err != nil {
+			return errorEnvelope(req.ID, "tenant_unsupported", err.Error())
+		}
+		cfg, err := s.agent.UpdateRuntimeLLMConfig(callCtx, agent.RuntimeLLMConfigPatch{
+			Provider:         in.Provider,
+			Model:            in.Model,
+			OpenRouterAPIKey: in.OpenRouterAPIKey,
+		})
+		if err != nil {
+			return errorEnvelope(req.ID, "config_failed", err.Error())
+		}
+		return resultEnvelope(req.ID, SystemConfigResult{
+			Provider:               cfg.Provider,
+			Model:                  cfg.Model,
+			HasOpenRouterAPIKey:    cfg.HasOpenRouterAPIKey,
+			OpenRouterAPIKeyMasked: cfg.OpenRouterAPIKeyMasked,
+		})
 	case "session.send":
 		var in SessionSendParams
 		if err := decodeParams(req.Params, &in); err != nil {
@@ -201,7 +404,10 @@ func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logg
 		if err != nil {
 			return errorEnvelope(req.ID, "tenant_unsupported", err.Error())
 		}
-		res, err := s.agent.Send(callCtx, in.SessionID, in.Text)
+		res, err := s.agent.SendWithOptions(callCtx, in.SessionID, in.Text, agent.SendOptions{
+			Provider: in.Provider,
+			Model:    in.Model,
+		})
 		if err != nil {
 			if reqLog != nil {
 				reqLog.Warn("session.send failed", "session_id", in.SessionID, "error", err)
@@ -215,6 +421,8 @@ func (s *Server) handleCall(ctx context.Context, req Envelope, reqLog *slog.Logg
 			SessionID:      res.SessionID,
 			AssistantText:  res.AssistantText,
 			HandledCommand: res.HandledCommand,
+			Provider:       res.Provider,
+			Model:          res.Model,
 		})
 	case "session.list":
 		var in SessionListParams
@@ -317,5 +525,14 @@ func errorEnvelope(id, code, message string) Envelope {
 			Code:    code,
 			Message: message,
 		},
+	}
+}
+
+func eventEnvelope(event agent.Event) Envelope {
+	data, _ := json.Marshal(event)
+	return Envelope{
+		Type:  EnvelopeTypeEvent,
+		Event: event.Type,
+		Data:  data,
 	}
 }

@@ -40,6 +40,11 @@ func (c *MockClient) Stream(_ context.Context, req CompletionRequest) (*Stream, 
 		defer close(events)
 		defer close(done)
 
+		model := strings.TrimSpace(req.Model)
+		if model == "" {
+			model = c.model
+		}
+
 		text := "No messages yet."
 		if len(req.Messages) > 0 {
 			last := req.Messages[len(req.Messages)-1]
@@ -47,7 +52,7 @@ func (c *MockClient) Stream(_ context.Context, req CompletionRequest) (*Stream, 
 			if content == "" {
 				content = "(empty)"
 			}
-			text = fmt.Sprintf("[%s] %s", c.model, content)
+			text = fmt.Sprintf("[%s] %s", model, content)
 		}
 
 		events <- StreamEvent{Type: StreamEventTextDelta, Delta: text}

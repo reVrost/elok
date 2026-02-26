@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	storesqlc "github.com/revrost/elok/pkg/store/sqlc"
 	"github.com/revrost/elok/pkg/tenantctx"
 	_ "modernc.org/sqlite"
 )
@@ -19,13 +20,19 @@ import (
 var migrationFS embed.FS
 
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	queries *storesqlc.Queries
 }
 
 type ChatStore interface {
 	AppendMessage(ctx context.Context, tenantID, sessionID, role, content string) (int64, error)
 	ListSessions(ctx context.Context, tenantID string, limit int) ([]Session, error)
 	ListMessages(ctx context.Context, tenantID, sessionID string, limit int) ([]Message, error)
+}
+
+type RuntimeConfigStore interface {
+	GetRuntimeLLMConfig(ctx context.Context, tenantID string) (RuntimeLLMConfig, error)
+	UpsertRuntimeLLMConfig(ctx context.Context, tenantID string, cfg RuntimeLLMConfig) error
 }
 
 type Session struct {
@@ -43,6 +50,14 @@ type Message struct {
 	Role      string    `json:"role"`
 	Content   string    `json:"content"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type RuntimeLLMConfig struct {
+	TenantID         string    `json:"tenant_id,omitempty"`
+	Provider         string    `json:"provider,omitempty"`
+	Model            string    `json:"model,omitempty"`
+	OpenRouterAPIKey string    `json:"openrouter_api_key,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }
 
 func Open(path string) (*Store, error) {
@@ -64,7 +79,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("set foreign_keys: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{
+		db:      db,
+		queries: storesqlc.New(db),
+	}, nil
 }
 
 func (s *Store) Close() error {
@@ -266,4 +284,36 @@ LIMIT ?
 		reversed[i], reversed[j] = reversed[j], reversed[i]
 	}
 	return reversed, nil
+}
+
+func (s *Store) GetRuntimeLLMConfig(ctx context.Context, tenantID string) (RuntimeLLMConfig, error) {
+	tenantID = tenantctx.Normalize(tenantID)
+	cfg, err := s.queries.GetRuntimeLLMConfig(ctx, tenantID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return RuntimeLLMConfig{TenantID: tenantID}, nil
+		}
+		return RuntimeLLMConfig{}, fmt.Errorf("get runtime llm config: %w", err)
+	}
+	return RuntimeLLMConfig{
+		TenantID:         cfg.TenantID,
+		Provider:         cfg.Provider,
+		Model:            cfg.Model,
+		OpenRouterAPIKey: cfg.OpenrouterApiKey,
+		UpdatedAt:        cfg.UpdatedAt,
+	}, nil
+}
+
+func (s *Store) UpsertRuntimeLLMConfig(ctx context.Context, tenantID string, cfg RuntimeLLMConfig) error {
+	tenantID = tenantctx.Normalize(tenantID)
+	err := s.queries.UpsertRuntimeLLMConfig(ctx, storesqlc.UpsertRuntimeLLMConfigParams{
+		TenantID:         tenantID,
+		Provider:         strings.TrimSpace(cfg.Provider),
+		Model:            strings.TrimSpace(cfg.Model),
+		OpenrouterApiKey: strings.TrimSpace(cfg.OpenRouterAPIKey),
+	})
+	if err != nil {
+		return fmt.Errorf("upsert runtime llm config: %w", err)
+	}
+	return nil
 }

@@ -42,7 +42,7 @@ This mirrors Pi/OpenClaw style extension points: register tools/commands, hook l
 
 ### Core packages
 
-- `cmd/elok`: single CLI entrypoint (`run`, `migrate`, `dev`, etc.)
+- `cmd/elok`: single CLI entrypoint (`run`, `version`)
 - `pkg/agent`: agent loop (messages -> model -> tool calls -> results) + event stream
 - `pkg/llm`: provider adapters (`openrouter`, `codex`)
 - `pkg/tools`: tool registry + JSON schema validation + execution
@@ -145,7 +145,7 @@ The chat UI is a SvelteKit PWA embedded directly into the `elok` binary.
 
 - Source: `ui/src/*`
 - Embedded assets: `ui/dist/*` via `ui/embed.go`
-- Served by gateway at `/` with SPA fallback to `index.html`
+- Served by gateway at `/app` with SPA fallback to `index.html`
 
 Build UI assets before running or committing UI changes:
 
@@ -163,8 +163,9 @@ go run ./cmd/elok run
 
 Open:
 
-- `http://127.0.0.1:7777/` for chat UI
+- `http://127.0.0.1:7777/app` for chat UI
 - `ws://127.0.0.1:7777/ws` for gateway RPC
+- `http://127.0.0.1:7777/` redirects to `/app`
 
 ## Dev Loop (Air)
 

@@ -70,6 +70,16 @@ func handleCall(st *sessionState, rt *scriptRuntime, env protocol.Envelope) {
 				Hooks:    true,
 				Tools:    false,
 			},
+			Commands: []protocol.CommandDef{
+				{
+					Command:     "/plan",
+					Description: "Plan mode controls: on, off, status, execute.",
+				},
+				{
+					Command:     "/todos",
+					Description: "Show the tracked plan steps.",
+				},
+			},
 		})
 	case "command.handle":
 		var in protocol.CommandHandleParams

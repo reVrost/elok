@@ -5,5 +5,3 @@ build
 coverage
 playwright-report
 test-results
-dist/*
-!dist/.keep

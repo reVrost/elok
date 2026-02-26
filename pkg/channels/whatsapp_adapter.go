@@ -1,4 +1,4 @@
-package whatsapp
+package channels
 
 import (
 	"context"
@@ -19,35 +19,35 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type Options struct {
+type whatsappOptions struct {
 	StorePath      string
 	Logger         *slog.Logger
 	OnConnected    func()
 	OnDisconnected func()
 	OnLoggedOut    func(reason string)
-	OnText         func(ctx context.Context, msg InboundText)
+	OnText         func(ctx context.Context, msg whatsappInboundText)
 }
 
-type InboundText struct {
+type whatsappInboundText struct {
 	ChatID   string
 	SenderID string
 	PushName string
 	Text     string
 }
 
-type Adapter struct {
+type whatsappAdapter struct {
 	log            *slog.Logger
 	onConnected    func()
 	onDisconnected func()
 	onLoggedOut    func(reason string)
-	onText         func(ctx context.Context, msg InboundText)
+	onText         func(ctx context.Context, msg whatsappInboundText)
 	db             *sql.DB
 	store          *sqlstore.Container
 	client         *whatsmeow.Client
 	handlerID      uint32
 }
 
-func NewAdapter(ctx context.Context, opts Options) (*Adapter, error) {
+func newWhatsAppAdapter(ctx context.Context, opts whatsappOptions) (*whatsappAdapter, error) {
 	log := opts.Logger
 	if log == nil {
 		log = slog.Default()
@@ -81,7 +81,7 @@ func NewAdapter(ctx context.Context, opts Options) (*Adapter, error) {
 	}
 
 	client := whatsmeow.NewClient(deviceStore, waLog.Stdout("whatsmeow/client", "INFO", true))
-	adapter := &Adapter{
+	adapter := &whatsappAdapter{
 		log:            log,
 		onConnected:    opts.OnConnected,
 		onDisconnected: opts.OnDisconnected,
@@ -95,7 +95,7 @@ func NewAdapter(ctx context.Context, opts Options) (*Adapter, error) {
 	return adapter, nil
 }
 
-func (a *Adapter) Connect(ctx context.Context) error {
+func (a *whatsappAdapter) Connect(ctx context.Context) error {
 	if a.client == nil {
 		return fmt.Errorf("whatsapp client is nil")
 	}
@@ -121,7 +121,7 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (a *Adapter) SendText(ctx context.Context, chatID, text string) error {
+func (a *whatsappAdapter) SendText(ctx context.Context, chatID, text string) error {
 	if a.client == nil {
 		return fmt.Errorf("whatsapp client is nil")
 	}
@@ -140,7 +140,7 @@ func (a *Adapter) SendText(ctx context.Context, chatID, text string) error {
 	return nil
 }
 
-func (a *Adapter) Close() error {
+func (a *whatsappAdapter) Close() error {
 	if a.client != nil {
 		a.client.RemoveEventHandler(a.handlerID)
 		a.client.Disconnect()
@@ -158,7 +158,7 @@ func (a *Adapter) Close() error {
 	return nil
 }
 
-func (a *Adapter) handleEvent(evt any) {
+func (a *whatsappAdapter) handleEvent(evt any) {
 	switch event := evt.(type) {
 	case *events.Connected:
 		a.log.Info("whatsapp connected")
@@ -180,15 +180,15 @@ func (a *Adapter) handleEvent(evt any) {
 	}
 }
 
-func (a *Adapter) handleMessage(evt *events.Message) {
+func (a *whatsappAdapter) handleMessage(evt *events.Message) {
 	if evt == nil || evt.Info.IsFromMe || a.onText == nil {
 		return
 	}
-	text := extractText(evt.Message)
+	text := extractWhatsAppText(evt.Message)
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	in := InboundText{
+	in := whatsappInboundText{
 		ChatID:   evt.Info.Chat.String(),
 		SenderID: evt.Info.Sender.String(),
 		PushName: evt.Info.PushName,
@@ -197,7 +197,7 @@ func (a *Adapter) handleMessage(evt *events.Message) {
 	go a.onText(context.Background(), in)
 }
 
-func extractText(message *waE2E.Message) string {
+func extractWhatsAppText(message *waE2E.Message) string {
 	if message == nil {
 		return ""
 	}

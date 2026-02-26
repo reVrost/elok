@@ -21,7 +21,6 @@ import (
 	"github.com/revrost/elok/pkg/observability"
 	"github.com/revrost/elok/pkg/plugins"
 	"github.com/revrost/elok/pkg/store"
-	"github.com/revrost/elok/pkg/tools"
 )
 
 var version = "dev"
@@ -40,8 +39,6 @@ func run(args []string) error {
 	switch args[0] {
 	case "run":
 		return runCommand(args[1:])
-	case "migrate":
-		return migrateCommand(args[1:])
 	case "version":
 		fmt.Printf("elok %s\n", version)
 		return nil
@@ -95,7 +92,7 @@ func runCommand(args []string) error {
 		return err
 	}
 
-	pluginManager := plugins.NewManager(log)
+	pluginManager := plugins.NewManager()
 	if err := pluginManager.Start(ctx, cfg.Plugins); err != nil {
 		return err
 	}
@@ -105,9 +102,9 @@ func runCommand(args []string) error {
 		_ = pluginManager.Stop(shutdownCtx)
 	}()
 
-	agentSvc := agent.NewService(st, llm.New(cfg.LLM), pluginManager, tools.NewRegistry(), log)
+	agentSvc := agent.New(st, llm.New(cfg.LLM), pluginManager, agent.NewRegistry())
 
-	channelManager := channels.NewManager(log, cfg.Tenancy.DefaultTenantID, func(ctx context.Context, sessionID, text string) (string, error) {
+	channelManager := channels.NewManager(cfg.Tenancy.DefaultTenantID, func(ctx context.Context, sessionID, text string) (string, error) {
 		result, err := agentSvc.Send(ctx, sessionID, text)
 		if err != nil {
 			return "", err
@@ -123,40 +120,12 @@ func runCommand(args []string) error {
 		}
 	}()
 
-	gatewayServer := gateway.NewServer(cfg.ListenAddr, agentSvc, channelManager, cfg.Tenancy.DefaultTenantID, log)
+	gatewayServer := gateway.NewServer(cfg.ListenAddr, agentSvc, channelManager, cfg.Tenancy.DefaultTenantID)
 
 	err = gatewayServer.Run(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	return nil
-}
-
-func migrateCommand(args []string) error {
-	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
-	configPath := fs.String("config", config.DefaultConfigPath(), "config file path")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		return err
-	}
-	if cfg.Tenancy.Mode != config.TenancyModeSingle {
-		// TODO(multi-tenant): wire tenant-aware migrations once tenancy.mode=multi is implemented.
-		return fmt.Errorf("tenancy.mode=%q is not implemented yet; use %q for now", cfg.Tenancy.Mode, config.TenancyModeSingle)
-	}
-	st, err := store.Open(cfg.DBPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := st.Migrate(ctx); err != nil {
-		return err
-	}
-	fmt.Println("migrations applied")
 	return nil
 }
 

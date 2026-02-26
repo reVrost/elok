@@ -23,6 +23,12 @@ type Manager struct {
 	plugins []*runtimePlugin
 }
 
+type CommandDef struct {
+	Command     string `json:"command"`
+	Description string `json:"description,omitempty"`
+	PluginID    string `json:"plugin_id,omitempty"`
+}
+
 type runtimePlugin struct {
 	log      *slog.Logger
 	spec     config.PluginSpec
@@ -43,12 +49,8 @@ type AfterTurnParams struct {
 	AssistantText string
 }
 
-func NewManager(log *slog.Logger) *Manager {
-	if log == nil {
-		log = slog.Default()
-	}
-	log = log.With("component", "plugins")
-	return &Manager{log: log}
+func NewManager() *Manager {
+	return &Manager{log: slog.Default().With("component", "plugins")}
 }
 
 func (m *Manager) Start(ctx context.Context, cfg config.PluginConfig) error {
@@ -146,6 +148,36 @@ func (m *Manager) AfterTurn(ctx context.Context, in AfterTurnParams) {
 			m.log.Warn("plugin after_turn failed", "plugin", plugin.spec.ID, "error", err)
 		}
 	}
+}
+
+func (m *Manager) ListCommands() []CommandDef {
+	out := make([]CommandDef, 0)
+	seen := make(map[string]bool)
+	for _, plugin := range m.plugins {
+		if !plugin.manifest.Capabilities.Commands {
+			continue
+		}
+		for _, cmd := range plugin.manifest.Commands {
+			command := strings.TrimSpace(cmd.Command)
+			if command == "" {
+				continue
+			}
+			if !strings.HasPrefix(command, "/") {
+				command = "/" + command
+			}
+			key := plugin.manifest.ID + ":" + command
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, CommandDef{
+				Command:     command,
+				Description: strings.TrimSpace(cmd.Description),
+				PluginID:    plugin.manifest.ID,
+			})
+		}
+	}
+	return out
 }
 
 func startPlugin(ctx context.Context, log *slog.Logger, spec config.PluginSpec) (*runtimePlugin, error) {
