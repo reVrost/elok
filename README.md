@@ -181,3 +181,72 @@ Behavior:
 - Go changes: rebuild `./tmp/elok` and restart.
 - UI changes under `ui/` (excluding `ui/dist`, `.svelte-kit`, `node_modules`): run `make ui`, then rebuild/restart Go binary.
 - No UI changes: skip UI build for faster loop.
+
+## Terminal Bench with Harbor
+
+You can benchmark the `elok` gateway loop (`session.send`) against Harbor datasets, including Terminal Bench.
+
+This repo includes:
+
+- `bench/harbor/elok_agent.py`: Harbor custom agent that forwards task instructions to `ws://.../ws` (`session.send`).
+- `scripts/run-harbor-terminal-bench.sh`: helper script to run Harbor with the custom agent.
+
+### 1) Start elok
+
+In one terminal:
+
+```bash
+go run ./cmd/elok run
+```
+
+### 2) Run a quick smoke benchmark
+
+In another terminal (from repo root):
+
+```bash
+./scripts/run-harbor-terminal-bench.sh --n-tasks 3 --n-concurrent 1 --disable-verification
+```
+
+Notes:
+
+- The script uses `uvx` automatically when available (`uvx --python 3.12 --with harbor --with websockets ...`).
+- If `uvx` is not installed, it falls back to `harbor` from your PATH.
+
+### 3) Run larger Terminal Bench datasets
+
+Sample set (default):
+
+```bash
+ELOK_HARBOR_DATASET=terminal-bench-sample@2.0 ./scripts/run-harbor-terminal-bench.sh
+```
+
+Full set:
+
+```bash
+ELOK_HARBOR_DATASET=terminal-bench@2.0 ./scripts/run-harbor-terminal-bench.sh --n-concurrent 8
+```
+
+Pro set:
+
+```bash
+ELOK_HARBOR_DATASET=terminal-bench-pro@1.0 ./scripts/run-harbor-terminal-bench.sh --n-concurrent 8
+```
+
+### 4) Configure runtime overrides (optional)
+
+Environment variables:
+
+- `ELOK_GATEWAY_URL` (default `ws://127.0.0.1:7777/ws`)
+- `ELOK_TENANT_ID` (default `default`)
+- `ELOK_HARBOR_DATASET` (default `terminal-bench-sample@2.0`)
+- `ELOK_HARBOR_JOBS_DIR` (default `jobs/harbor`)
+- `ELOK_SEND_PROVIDER` (sets `session.send.provider`)
+- `ELOK_SEND_MODEL` (sets `session.send.model`)
+
+### 5) Inspect results
+
+Job artifacts are written to `jobs/harbor` by default. Use Harbor's viewer:
+
+```bash
+harbor view -p jobs/harbor/<job_id>
+```
